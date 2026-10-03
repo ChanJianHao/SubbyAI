@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            extras: '--extra dev --extra gpu'
+            app: dist/SubbyAI
+          - os: macos-15
+            platform: macos-arm64
+            extras: '--extra dev'
+            app: dist/SubbyAI.app
+          - os: macos-15-intel
+            platform: macos-x64
+            extras: '--extra dev'
+            app: dist/SubbyAI.app
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Locked environment
+        run: |
+          python -m pip install --require-hashes -r packaging/bootstrap.txt
+          uv sync --locked ${{ matrix.extras }}
+      - name: Release prerequisites
+        run: |
+          uv run --no-sync python scripts/check_release_version.py
+          uv run --no-sync ruff check src tests scripts
+          uv run --no-sync python scripts/audit_privacy.py --history
+          uv run --no-sync python scripts/audit_secrets.py
+          uv run --no-sync python scripts/audit_dependencies.py
+          uv run --no-sync python scripts/prepare_release.py
+          uv run --no-sync python scripts/prepare_smoke_models.py
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          HF_HUB_OFFLINE: '1'
+        run: uv run --no-sync pytest tests
+      - name: Freeze and verify
+        run: |
+          uv run --no-sync python scripts/build_app.py
+          uv run --no-sync python scripts/verify_package.py --require-models
+          uv run --no-sync python scripts/audit_privacy.py --artifacts ${{ matrix.app }}
+      - name: Windows installer and portable archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          iscc /DAppVersion=$version packaging/windows/installer.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist/SubbyAI -DestinationPath dist/SubbyAI-portable-win-x64.zip
+          uv run --no-sync python scripts/prepare_native_sources.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS-windows.txt -Encoding utf8NoBOM
+      - name: macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/dmg build/dmg-mount
+          cp -R dist/SubbyAI.app build/dmg/SubbyAI.app
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname SubbyAI -srcfolder build/dmg -ov -format UDZO dist/SubbyAI-${{ matrix.platform }}.dmg
+          hdiutil attach dist/SubbyAI-${{ matrix.platform }}.dmg -readonly -nobrowse -mountpoint "$PWD/build/dmg-mount"
+          trap 'hdiutil detach "$PWD/build/dmg-mount" || true' EXIT
+          "$PWD/build/dmg-mount/SubbyAI.app/Contents/MacOS/SubbyAI" --self-check --require-models
+          hdiutil detach "$PWD/build/dmg-mount"
+          trap - EXIT
+          shasum -a 256 dist/SubbyAI-${{ matrix.platform }}.dmg > dist/SHA256SUMS-${{ matrix.platform }}.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.dmg
+            dist/SHA256SUMS-*.txt
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317
+        with:
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          draft: true
+          fail_on_unmatched_files: true
+          body: |
+            SubbyAI V1: live subtitles, independent translation, optional private transcripts and explicit server consent.
+
+            V1 builds are unsigned. Read the platform installation guide before installing.
+            Native library source and license notices accompany the binary distributions.
+          files: release/*

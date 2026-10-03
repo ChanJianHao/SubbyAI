@@ -1,0 +1,36 @@
+name: Bug report
+description: Something is broken that is not about caption accuracy.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: SubbyAI version and OS
+      placeholder: e.g. 1.0.0 on Windows 11 23H2, or "running from source, commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options: ["Installer", "Portable zip", "macOS .dmg", "From source"]
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        `%APPDATA%\SubbyAI\Logs\subbyai.log` on Windows, `~/Library/Logs/subbyai/subbyai.log` on macOS.
+        Review it first. Remove keys, private captions, personal paths and server credentials.
+      render: text

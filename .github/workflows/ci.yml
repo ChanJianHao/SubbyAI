@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Locked environment
+        run: |
+          python -m pip install --require-hashes -r packaging/bootstrap.txt
+          uv sync --locked --extra dev
+      - name: Lint and version
+        run: |
+          uv run --no-sync ruff check src tests scripts
+          uv run --no-sync python scripts/check_release_version.py
+      - name: Privacy and secrets in tree and history
+        run: |
+          uv run --no-sync python scripts/audit_privacy.py --history
+          uv run --no-sync python scripts/audit_secrets.py
+      - name: Locked dependency advisories
+        run: uv run --no-sync python scripts/audit_dependencies.py
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          HF_HUB_OFFLINE: '1'
+        run: uv run --no-sync pytest tests --junitxml=build/test-results.xml

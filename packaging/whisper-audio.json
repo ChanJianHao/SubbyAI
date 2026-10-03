@@ -1,0 +1,5 @@
+{
+  "version": "1.2.1",
+  "upstream_sha256": "60a1d8638f718cbf6d245aed3e5a5aa61c1f822a0b0fe9b48a7c928d47c23909",
+  "change": "Defer PyAV imports into file-decoding functions; live NumPy recognition is unchanged."
+}

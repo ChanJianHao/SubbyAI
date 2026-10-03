@@ -1,0 +1,71 @@
+name: Captions are wrong or missing
+description: No captions appear, or they are inaccurate, late, or in the wrong language.
+labels: ["captions"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most caption problems come down to which audio device SubbyAI is listening to.
+        **Before filing:** press Start, play something, and watch the level meter on the Live screen.
+        If it does not move, SubbyAI is listening to a different device than the one playing sound —
+        change it under Settings → Audio & sources. That fixes the large majority of reports.
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: What happens?
+      options:
+        - No captions appear at all
+        - Captions appear but the words are wrong
+        - Captions are correct but too slow
+        - The wrong language is detected
+        - Translation is missing or wrong
+        - Captions appear, but not over my game
+    validations:
+      required: true
+
+  - type: dropdown
+    id: meter
+    attributes:
+      label: Does the level meter move while sound is playing?
+      options: ["Yes", "No", "I did not check"]
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: What were you playing?
+      placeholder: e.g. a Japanese YouTube video in Chrome; Elden Ring; a Teams call
+    validations:
+      required: true
+
+  - type: input
+    id: languages
+    attributes:
+      label: Languages
+      placeholder: e.g. hearing Japanese, showing English — or "auto-detect"
+
+  - type: dropdown
+    id: quality
+    attributes:
+      label: Performance (Settings → Everyday)
+      options: ["Fast", "Balanced", "Accurate", "Custom", "Not sure"]
+
+  - type: input
+    id: version
+    attributes:
+      label: SubbyAI version and OS
+      placeholder: e.g. 1.0.0 on Windows 11 23H2
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        `%APPDATA%\SubbyAI\Logs\subbyai.log` on Windows, `~/Library/Logs/subbyai/subbyai.log` on macOS.
+        The last 50 lines from around when it went wrong is plenty.
+        Remove credentials, private captions and identifying paths before sharing.
+      render: text

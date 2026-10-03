@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest something SubbyAI should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe a user problem and how the proposed feature would help.
+        Search existing issues first and keep examples free of private information.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem, not the solution. What are you watching, playing or attending?
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: Optional. If you have a specific idea, describe it here.
+
+  - type: checkboxes
+    id: fit
+    attributes:
+      label: Does it fit?
+      options:
+        - label: This keeps working with no internet connection
+        - label: This does not require an account or a subscription

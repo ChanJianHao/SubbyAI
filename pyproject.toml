@@ -1,0 +1,113 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subbyai"
+version = "1.0.0"
+description = "Live captions and translation for anything your computer plays."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "SubbyAI contributors" }]
+keywords = ["captions", "subtitles", "translation", "accessibility", "whisper", "speech-to-text"]
+classifiers = [
+    "Environment :: X11 Applications :: Qt",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Adaptive Technologies",
+]
+
+dependencies = [
+    "PySide6>=6.7",
+    "faster-whisper==1.2.1",
+    "ctranslate2>=4.8.1,<5",
+    # Parakeet, on the onnxruntime faster-whisper already pulls in for the
+    # voice detector. A 4 MB pure-Python wheel over numpy + onnxruntime: no
+    # PyTorch, no NeMo, no second native runtime.
+    "onnx-asr>=0.12",
+    "numpy>=1.26",
+    "platformdirs>=4.0",
+    "psutil>=5.9",
+    "httpx>=0.27",
+    # Only the pack format is used; no PyTorch / Stanza dependency tree.
+    "sentencepiece>=0.2,<0.3",
+    # API keys use the operating-system credential store.
+    "keyring>=25",
+    "filelock>=4.0.9",
+    "pyaudiowpatch>=0.2.12 ; sys_platform == 'win32'",
+    "sounddevice>=0.4.6 ; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+# NVIDIA runtime libraries as pip wheels — no hand-copied DLLs.
+gpu = [
+    "nvidia-cublas-cu12 ; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cudnn-cu12>=9 ; sys_platform == 'win32' or sys_platform == 'linux'",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "pyinstaller>=6.10",
+]
+
+[project.gui-scripts]
+subbyai = "subbyai.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/ChanJianHao/SubbyAI"
+Issues = "https://github.com/ChanJianHao/SubbyAI/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"subbyai.resources" = ["*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["SIM108"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+required-version = "==0.12.22"
+constraint-dependencies = [
+    "PySide6==6.11.2",
+    "PySide6-Addons==6.11.2",
+    "PySide6-Essentials==6.11.2",
+    "shiboken6==6.11.2",
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.1",
+    "onnx-asr==0.12.0",
+    "onnxruntime==1.28.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "onnxruntime==1.23.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sentencepiece==0.2.2",
+    "numpy==2.5.1",
+    "httpx==0.28.1",
+    "httpcore==1.0.9",
+    "keyring==25.7.0",
+    "platformdirs==4.11.0",
+    "psutil==7.2.2",
+    "av==19.0.1",
+    "huggingface-hub==1.26.1",
+    "tokenizers==0.23.1",
+    "PyAudioWPatch==0.2.12.8; sys_platform == 'win32'",
+    "pyinstaller==6.21.0",
+    "pyinstaller-hooks-contrib==2026.6",
+    "pytest==9.1.1",
+    "ruff==0.16.1",
+    "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cudnn-cu12==9.27.0.42; sys_platform == 'win32' or sys_platform == 'linux'",
+    "sounddevice==0.5.6; sys_platform == 'darwin'",
+]
+environments = ["sys_platform == 'win32'", "sys_platform == 'darwin'"]
+required-environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'", "sys_platform == 'darwin' and platform_machine == 'arm64'", "sys_platform == 'darwin' and platform_machine == 'x86_64'"]
