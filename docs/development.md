@@ -29,6 +29,7 @@ fonts, which are not bundled assets.
 | `smoke_ui.py` | Exercise navigation, switches, notices, progress and reduced motion |
 | `smoke_windows_launch.py` | Launch/close the frozen app with an isolated Unicode profile |
 | `make_icon.py` | Generate original Qt artwork and application icons |
+| `make_brand_assets.py` | Render matching repository, social preview and installer art |
 | `e2e_smoke.py --translate fr` | Exercise Windows loopback, recognition and local translation |
 | `audit_privacy.py --history` | Inspect source, reachable history and optional binary payloads |
 | `audit_secrets.py` | Run hash-pinned Gitleaks over source and history |
@@ -36,6 +37,7 @@ fonts, which are not bundled assets.
 | `prepare_release.py` | Collect license texts and dependency versions |
 | `prepare_smoke_models.py` | Download pinned real-model validation fixtures |
 | `build_app.py` | Freeze the app with an isolated native-library search path |
+| `build_installer.ps1` | Verify the pinned compiler and build the branded Windows installer |
 | `verify_package.py --require-models` | Verify frozen UI, recognition and translation without skips |
 
 Real audio checks can download models and play a public sentence through your output.

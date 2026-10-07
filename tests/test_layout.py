@@ -191,3 +191,29 @@ def test_large_app_text_keeps_settings_reachable(surfaces, qt_app):
     for area in surfaces["settings"].findChildren(QAbstractScrollArea):
         assert area.horizontalScrollBar().maximum() == 0
     theme.apply(qt_app, "dark")
+
+
+@pytest.mark.parametrize("text_scale", [1.0, 1.5])
+def test_download_feedback_never_overlaps_and_stop_stays_visible(surfaces, qt_app, text_scale):
+    theme.apply(qt_app, "dark", text_scale=text_scale, reduce_motion=True)
+    shell, live = surfaces["shell"], surfaces["live"]
+    shell.resize(640, 460)
+    shell.show()
+    live.set_running(True)
+    live.set_download_progress(0.5, "Getting the model ready for your subtitles.")
+    for _ in range(4):
+        qt_app.processEvents()
+    mascot, title, body = live.mascot, live._empty_title, live._empty_body
+    assert title.geometry().top() >= mascot.geometry().bottom()
+    assert body.geometry().top() >= title.geometry().bottom()
+    assert title.height() >= title.fontMetrics().height()
+    assert body.height() >= body.heightForWidth(body.width())
+    assert live.content_scroll.horizontalScrollBar().maximum() == 0
+    assert live.start_button.isVisible()
+    assert live.rect().contains(live.start_button.mapTo(live, live.start_button.rect().center()))
+    assert live.download_message.isVisible()
+    assert live.download_message.text() == "Getting the model ready for your subtitles."
+    assert live.rect().contains(
+        live.download_message.mapTo(live, live.download_message.rect().center())
+    )
+    theme.apply(qt_app, "dark", reduce_motion=False)

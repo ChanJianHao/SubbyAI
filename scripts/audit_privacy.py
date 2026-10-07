@@ -67,12 +67,15 @@ def private_markers():
 
 
 def scan(data, location, markers):
+    # Windows resources and native metadata often encode paths and credentials
+    # as UTF-16. Inspect those strings as well as ordinary UTF-8/ASCII bytes.
+    normalized = data.replace(b"\x00", b"")
     findings = [
         {"location": location, "rule": rule}
         for rule, pattern in RULES.items()
-        if pattern.search(data)
+        if pattern.search(normalized)
     ]
-    lower = data.lower().replace(b"\x00", b"")
+    lower = normalized.lower()
     if not (location.startswith("artifact:") and "icudt" in location) and any(
         re.search(rb"(?<![a-z0-9_])" + re.escape(marker) + rb"(?![a-z0-9_])", lower)
         for marker in markers
@@ -80,7 +83,7 @@ def scan(data, location, markers):
         findings.append({"location": location, "rule": "current-machine-identity"})
     if location.startswith(("worktree:", "history:", "binary:")) and any(
         match.group(1).lower() not in GENERIC_ACCOUNTS
-        for match in HOME_PATH.finditer(data)
+        for match in HOME_PATH.finditer(normalized)
     ):
         findings.append({"location": location, "rule": "private-home-path"})
     return findings
@@ -117,9 +120,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--artifacts", type=Path)
+    parser.add_argument(
+        "--private-marker", action="append", default=[],
+        help="Additional private names or identifiers to reject (matches stay redacted).",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / "build" / "privacy-audit.json")
     args = parser.parse_args()
     markers, findings = private_markers(), []
+    markers.update(value.lower().encode("utf-8") for value in args.private_marker if value.strip())
     files = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split(b"\0")
     seen = set()
     for file in files:

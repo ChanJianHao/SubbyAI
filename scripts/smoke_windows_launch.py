@@ -30,8 +30,10 @@ def main() -> int:
         raise SystemExit("This check requires Windows.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", default="1")
+    parser.add_argument("--executable", type=Path, default=ROOT / "dist/SubbyAI/SubbyAI.exe")
+    parser.add_argument("--first-run", action="store_true")
     args = parser.parse_args()
-    executable = ROOT / "dist" / "SubbyAI" / "SubbyAI.exe"
+    executable = args.executable.resolve()
     if not executable.is_file():
         raise SystemExit("Build the app before checking its launch.")
     user32 = ctypes.windll.user32
@@ -49,7 +51,9 @@ def main() -> int:
             json.dumps(
                 {
                     "schema_version": SCHEMA_VERSION,
-                    "general": {"onboarding_complete": True, "close_to_tray": False},
+                    "general": {
+                        "onboarding_complete": not args.first_run, "close_to_tray": False,
+                    },
                     "history": {"enabled": False},
                 }
             ),
@@ -72,11 +76,12 @@ def main() -> int:
         )
         process = subprocess.Popen([str(executable)], cwd=scratch, env=environment)
         main_window = None
+        setup_window = None
         window_titles: set[str] = set()
 
         @callback_type
         def find_window(handle, _parameter):
-            nonlocal main_window
+            nonlocal main_window, setup_window
             owner = wintypes.DWORD()
             user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
             if owner.value == process.pid:
@@ -86,6 +91,8 @@ def main() -> int:
                     window_titles.add(title.value)
                 if title.value in {APP_FULL_NAME, f"{APP_FULL_NAME} - {APP_NAME}"}:
                     main_window = handle
+                if title.value == f"Set up {APP_NAME}":
+                    setup_window = handle
             return True
 
         try:
@@ -100,6 +107,15 @@ def main() -> int:
             time.sleep(2)  # Allow initialization and first paints to complete.
             if process.poll() is not None:
                 raise RuntimeError("The packaged app failed during initialization.")
+            if args.first_run:
+                deadline = time.monotonic() + 25
+                while setup_window is None and time.monotonic() < deadline:
+                    user32.EnumWindows(find_window, 0)
+                    time.sleep(0.1)
+                if setup_window is None:
+                    raise RuntimeError("The first-run setup did not appear.")
+                user32.PostMessageW(setup_window, 0x0010, 0, 0)
+                time.sleep(0.5)
             user32.PostMessageW(main_window, 0x0010, 0, 0)
             if process.wait(timeout=20) != 0:
                 raise RuntimeError("The packaged app did not close cleanly.")
@@ -132,6 +148,7 @@ def main() -> int:
                 "unicode_profile": True,
                 "clean_path": True,
                 "graceful_exit": True,
+                "first_run": args.first_run,
             }
         )
     )

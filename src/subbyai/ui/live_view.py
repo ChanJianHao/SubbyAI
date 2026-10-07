@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -95,12 +96,27 @@ class LiveView(QWidget):
         root.setContentsMargins(SPACE["xl"], SPACE["lg"], SPACE["xl"], SPACE["xl"])
         root.setSpacing(SPACE["md"])
 
+        # Download/error copy and larger accessibility text can exceed a compact
+        # window. Let the content scroll instead of squeezing labels below their
+        # font height; Start/Stop and the everyday toggles remain in view.
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        content = QWidget()
+        body = QVBoxLayout(content)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(SPACE["md"])
+        self.content_scroll.setWidget(content)
+        root.addWidget(self.content_scroll, stretch=1)
+
         self.banner = StatusBanner()
         self.banner.action_clicked.connect(self.banner_action)
-        root.addWidget(self.banner)
+        body.addWidget(self.banner)
         self.history_warning = StatusBanner()
         self.history_warning.action_clicked.connect(self.banner_action)
-        root.addWidget(self.history_warning)
+        body.addWidget(self.history_warning)
         greeting = QHBoxLayout()
         title = QLabel("Your world, subtitled.")
         title.setObjectName("title")
@@ -110,12 +126,12 @@ class LiveView(QWidget):
         self.setup_button.setObjectName("chip")
         self.setup_button.clicked.connect(lambda: self.banner_action.emit("setup"))
         greeting.addWidget(self.setup_button)
-        root.addLayout(greeting)
+        body.addLayout(greeting)
         self.privacy_indicator = QLabel()
         self.privacy_indicator.setObjectName("secondary")
         self.privacy_indicator.setWordWrap(True)
         self.privacy_indicator.setTextFormat(Qt.TextFormat.PlainText)
-        root.addWidget(self.privacy_indicator)
+        body.addWidget(self.privacy_indicator)
         self.audio_source = compact_combo(QComboBox())
         self.audio_source.setAccessibleName("Audio source")
         self.audio_source.addItem("System audio · videos, games and calls", "system")
@@ -126,10 +142,17 @@ class LiveView(QWidget):
         self.audio_source.activated.connect(
             lambda index: self.source_changed.emit(self.audio_source.itemData(index))
         )
-        root.addWidget(self.audio_source)
+        body.addWidget(self.audio_source)
 
-        root.addWidget(self._build_preview(), stretch=1)
+        body.addWidget(self._build_preview(), stretch=1)
         root.addWidget(self._build_controls())
+        self.download_message = QLabel()
+        self.download_message.setObjectName("secondary")
+        self.download_message.setTextFormat(Qt.TextFormat.PlainText)
+        self.download_message.setWordWrap(True)
+        self.download_message.setAccessibleName("Download status")
+        self.download_message.hide()
+        root.addWidget(self.download_message)
         root.addWidget(self._build_toggles())
 
     def _build_preview(self) -> QWidget:
@@ -334,12 +357,15 @@ class LiveView(QWidget):
         self.mascot.set_mood("busy")
         self._empty_title.setText("One-time download")
         self._empty_body.setText(message)
+        self.download_message.setText(message)
+        self.download_message.show()
         self._update_empty_visibility()
 
     def hide_download_progress(self) -> None:
         reveal(self.progress, False)
         reveal(self.cancel_download, False)
         self.activity.set_busy(False)
+        self.download_message.hide()
 
     def add_segment(self, segment: CaptionSegment) -> None:
         self._segments.append(segment)

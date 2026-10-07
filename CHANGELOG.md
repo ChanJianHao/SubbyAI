@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
+
+First SubbyAI release.
 
 - Interruptible page transitions, sliding settings and transcript panels,
   animated switches, tab indicators, focus rings and press feedback.
@@ -10,10 +12,11 @@
   surfaces release snapshots and stop decorative animation clocks.
 - Stable live caption widgets during late translations, safer card activation,
   replacement notification timing and transcript callback lifetime fixes.
-
-## 1.0.0
-
-First SubbyAI release.
+- Cohesive repository hero, social preview and original Mochi installer artwork.
+- Windows resource privacy scanning covers UTF-16 paths and credentials, with
+  additional private-identity checks for the final release audit.
+- Download and error feedback stays readable in compact windows and with larger
+  app text; Start/Stop and quick subtitle controls remain visible.
 
 - Live original-language captions with independent local or optional remote translation.
 - System-audio and microphone modes with source-aware defaults, device recovery and setup.

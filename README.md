@@ -1,6 +1,12 @@
-# SubbyAI
+![SubbyAI — Your world, subtitled. Live subtitles for anime, dramas and games.](docs/images/hero.png)
 
-**Your world, subtitled.**
+<p align="center">
+  <a href="https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-Setup-1.0.0.exe"><strong>Download for Windows</strong></a>
+  · <a href="https://github.com/ChanJianHao/SubbyAI/releases">All downloads</a>
+  · <a href="docs/installation-windows.md">Getting started</a>
+</p>
+
+# Your world, subtitled.
 
 Watch anime, K-dramas, films, games and streams in the language you choose. SubbyAI
 listens to system sound or an explicitly selected microphone and shows the original
@@ -10,16 +16,17 @@ for conversations, lectures, interviews and language practice.
 Local speech recognition and translation are the defaults. No account, subscription
 or API key is needed for local use. Download your models once, then watch offline.
 
-> **Status: V1 (1.0.0). Builds are unsigned.** Windows users may see
-> SmartScreen and macOS users may see Gatekeeper. Read the
-> [Windows](docs/installation-windows.md) or [macOS](docs/installation-macos.md) guide.
-> Release artifacts are built from tags into a draft release for review.
+> **Windows V1.0.0 · Free & open source · No account needed.** The Windows build
+> is unsigned, so SmartScreen may ask you to confirm the download. See the
+> [installation guide](docs/installation-windows.md). macOS is supported from source;
+> packaged macOS downloads require separate platform validation.
 
 ![SubbyAI Live in its Sakura dark theme](docs/images/live-dark.png)
 
 ## Start watching
 
-1. Get the Windows installer or portable ZIP from [Releases](https://github.com/ChanJianHao/SubbyAI/releases).
+1. Get the [Windows installer](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-Setup-1.0.0.exe)
+   or [portable ZIP](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-portable-win-x64.zip).
 2. Open SubbyAI. Setup recommends a model for your computer and lets you test the audio meter.
 3. Choose **System audio** for playback or **Microphone** for conversations and lectures,
    then choose the language you'll hear and your subtitle language.
@@ -69,7 +76,7 @@ preserves all your settings. Technical changes show as **Custom** until you choo
 
 | | Windows | macOS |
 |---|---|---|
-| Release build | Windows 10 1809+ / 11, x64 | macOS 15 builds for Apple silicon and Intel |
+| Distribution | Windows 10 1809+ / 11, x64 | Source; packaged builds pending validation |
 | System audio | WASAPI loopback, no virtual cable | BlackHole or another loopback input |
 | RAM | 4 GB for lightweight use; 8 GB or more helps larger models | Same |
 | GPU | Optional NVIDIA acceleration; CPU remains supported | CPU inference |
@@ -136,7 +143,7 @@ test instructions are in [development](docs/development.md).
 
 [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) ·
 [Architecture](docs/architecture.md) · [Release process](docs/release.md) ·
-[Contributing](CONTRIBUTING.md)
+[V1 release notes](docs/release-notes-v1.0.0.md) · [Contributing](CONTRIBUTING.md)
 
 SubbyAI is [MIT licensed](LICENSE). Dependency, model and artwork
 notices are recorded in [NOTICE.md](NOTICE.md), with license texts included in release builds.

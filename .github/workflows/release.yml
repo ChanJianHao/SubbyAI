@@ -66,8 +66,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $version = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          iscc /DAppVersion=$version packaging/windows/installer.iss
+          ./scripts/build_installer.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Compress-Archive -Path dist/SubbyAI -DestinationPath dist/SubbyAI-portable-win-x64.zip
           uv run --no-sync python scripts/prepare_native_sources.py

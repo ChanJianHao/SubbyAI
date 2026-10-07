@@ -18,7 +18,7 @@ uv run --no-sync python scripts/prepare_smoke_models.py
 uv run --no-sync python scripts/build_app.py
 uv run --no-sync python scripts/verify_package.py --require-models
 uv run --no-sync python scripts/audit_privacy.py --artifacts dist/SubbyAI
-iscc /DAppVersion=1.0.0 packaging/windows/installer.iss
+./scripts/build_installer.ps1
 ```
 
 Run Gitleaks over both the release tree and every reachable commit, with redacted reports.
@@ -28,7 +28,8 @@ are failures, not clean results. See [repository hygiene](repository-hygiene.md)
 ## Distribution
 
 - Windows per-user x64 installer and portable ZIP containing the complete app directory.
-- macOS 15 ARM64 and Intel DMGs, verified on their respective runners.
+- V1.0.0 publishes Windows artifacts. macOS ARM64 and Intel DMGs require separate
+  runner and hardware validation before distribution.
 - SHA-256 checksums, runtime inventory, dependency notices and corresponding native source.
 
 **Decision: V1 ships unsigned.** Install guides explain SmartScreen and Gatekeeper.
@@ -57,3 +58,8 @@ Record results against each exact binary and checksum:
 
 Hardware tests need actual devices. Automated tests and packaging cannot substitute for physical
 GPU/audio/display acceptance. Do not claim a tested configuration without evidence.
+
+The Windows compiler bootstrap uses the immutable Inno Setup 6.7.3 release from
+its official repository, verifies its pinned SHA-256 and publisher signature, and
+keeps the compiler in ignored build tools. GitHub Actions account billing restrictions
+can prevent runners from starting; that is an infrastructure failure, not a passed gate.
