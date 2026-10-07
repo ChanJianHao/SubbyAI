@@ -145,7 +145,7 @@ def sheet(qt_app):
 
 def test_installed_models_offer_removal_and_others_offer_install(sheet):
     widget, _ = sheet
-    assert widget.rows["base"].remove_button.isVisible() is False or True  # shown when laid out
+    assert widget.rows["base"].remove_button.isVisibleTo(widget) is True
     assert widget.rows["large-v3"].install_button.isVisibleTo(widget) is True
     assert widget.rows["large-v3"].remove_button.isVisibleTo(widget) is False
 
@@ -332,7 +332,7 @@ def test_picking_a_tier_clears_a_specific_engine(qt_app):
 
 
 def test_the_recommended_tier_is_badged(qt_app):
-    """The probe always knew; nothing ever showed the user its answer."""
+    """The recommended tier leaves GPU resources available for playback."""
     from subbyai.asr.capability import MachineCapability
     from subbyai.ui.settings_widgets.quality_picker import QualityPicker
 
@@ -346,7 +346,7 @@ def test_the_recommended_tier_is_badged(qt_app):
         for tier in QualityTier
         if picker.cards.card(tier.value)._badge.text()
     ]
-    assert badged == [QualityTier.MAXIMUM.value]
+    assert badged == [QualityTier.DETAILED.value]
 
 
 def test_a_modest_machine_is_recommended_something_it_can_run(qt_app):

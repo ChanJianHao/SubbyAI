@@ -15,7 +15,6 @@ from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QListWidget,
@@ -37,6 +36,7 @@ from ..translation import (
     tier_for_url,
 )
 from .model_catalogue import ModelCatalogue
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_widgets import (
     Group,
     PrivacyBadge,
@@ -86,6 +86,9 @@ class IntelligenceSection(SettingsSection):
         self._deps = deps
         self._rows: dict[str, ProviderRow] = {}
         self._tests_running: set[str] = set()
+        self._drag_timer = QTimer(self)
+        self._drag_timer.setSingleShot(True)
+        self._drag_timer.timeout.connect(self._commit_drag)
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
@@ -290,7 +293,7 @@ class IntelligenceSection(SettingsSection):
 
     def _on_rows_moved(self, *_args) -> None:
         # Deferred: the view is still tearing down the dragged row's widget.
-        QTimer.singleShot(0, self._commit_drag)
+        self._drag_timer.start(0)
 
     def _commit_drag(self) -> None:
         ids = [

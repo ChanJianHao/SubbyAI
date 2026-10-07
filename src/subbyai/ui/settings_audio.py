@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..audio.base import AudioDevice, resolve_device
 from ..core.settings import SettingsStore
 from .settings_languages import RECONNECT_NOTE
 from .settings_widgets import Group, LevelMeter, SettingsSection, hint_label
@@ -41,12 +42,13 @@ class _DeviceRow(QWidget):
     def __init__(self, device: Any, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.device_id = str(getattr(device, "id", ""))
+        self.device_name = device.name if self.device_id else ""
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SPACE["sm"])
-        name = str(getattr(device, "name", "")) or "Unnamed output"
+        name = str(getattr(device, "name", "")) or "Unnamed device"
         if getattr(device, "is_default", False):
-            name = f"{name} (your usual output)"
+            name = f"{name} (system default)"
         self.button = QRadioButton(name, self)
         row.addWidget(self.button, 1)
         self._row = row
@@ -73,8 +75,14 @@ class AudioSection(SettingsSection):
         column.setSpacing(0)
         devices = Group(
             "Listen to",
-            f"Whatever this output is playing is what gets captioned. {RECONNECT_NOTE}",
+            "System audio hears playback. Microphone hears the room. "
+            f"Only the selected source is opened. {RECONNECT_NOTE}",
         )
+        self.source = compact_combo(QComboBox(self))
+        self.source.addItem("System audio", "system")
+        self.source.addItem("Microphone", "microphone")
+        self.source.activated.connect(self._on_source)
+        devices.add_row("Audio source", self.source)
         self.device_box = QWidget(self)
         self.device_layout = QVBoxLayout(self.device_box)
         self.device_layout.setContentsMargins(0, 0, 0, 0)
@@ -84,7 +92,7 @@ class AudioSection(SettingsSection):
         self.empty_note.setVisible(False)
         devices.add(self.empty_note)
         self.rescan_button = QPushButton("Look again", self)
-        self.rescan_button.clicked.connect(self.refresh)
+        self.rescan_button.clicked.connect(self._rescan)
         devices.add(self.rescan_button)
         column.addWidget(devices)
 
@@ -105,8 +113,16 @@ class AudioSection(SettingsSection):
     def set_level(self, level: float) -> None:
         self.meter.set_level(level)
 
+    def _rescan(self) -> None:
+        refresh = getattr(self._deps, "refresh_audio_devices", None)
+        if refresh is not None:
+            refresh()
+        else:
+            self.refresh()
+
     def refresh(self) -> None:
         with self.quiet():
+            self.source.setCurrentIndex(max(0, self.source.findData(self.settings.audio.source)))
             index = self.sensitivity.findData(self.settings.captions.speech_sensitivity)
             self.sensitivity.setCurrentIndex(max(0, index))
         self._rebuild_devices()
@@ -121,6 +137,35 @@ class AudioSection(SettingsSection):
         self.meter.setVisible(False)
 
         devices, problem = self._list_devices()
+        devices = [d for d in devices if d.source == self.settings.audio.source]
+        if not devices and not problem:
+            problem = (
+                "No microphone found. Connect one and check microphone permissions."
+                if self.settings.audio.source == "microphone"
+                else "No system-audio source found. Connect speakers or headphones. "
+                "On macOS, install a loopback input such as BlackHole."
+            )
+        resolved = resolve_device(
+            devices,
+            self.settings.audio.device_id,
+            self.settings.audio.device_name,
+            source=self.settings.audio.source,
+        )
+        if self.settings.audio.device_id and not any(
+            d.name == self.settings.audio.device_name or d.id == self.settings.audio.device_id
+            for d in devices
+        ):
+            problem = "Your selected device is disconnected. Reconnect it or choose another below."
+        default = AudioDevice(
+            "",
+            "Follow my default microphone"
+            if self.settings.audio.source == "microphone"
+            else "Follow my default output",
+            0,
+            0,
+            self.settings.audio.source == "system",
+        )
+        devices = [default, *devices]
         self.empty_note.setText(problem)
         self.empty_note.setVisible(bool(problem))
         for device in devices:
@@ -132,13 +177,10 @@ class AudioSection(SettingsSection):
             self.device_layout.addWidget(row)
             self._rows.append(row)
 
-        default_id = next(
-            (str(getattr(d, "id", "")) for d in devices if getattr(d, "is_default", False)), ""
-        )
         selected = (
-            _find(self._rows, self.settings.audio.device_id)
-            or _find(self._rows, default_id)
-            or (self._rows[0] if self._rows else None)
+            self._rows[0]
+            if self.settings.audio.device_id is None
+            else _find(self._rows, resolved.id if resolved else self.settings.audio.device_id)
         )
         if selected is not None:
             selected.button.setChecked(True)
@@ -154,7 +196,7 @@ class AudioSection(SettingsSection):
         except Exception as exc:
             return [], getattr(exc, "message", "") or "We couldn't read your audio devices."
         if not devices:
-            return [], "No audio outputs turned up. Start something playing and look again."
+            return [], "No audio devices found. Connect a source and look again."
         return devices, ""
 
     def _on_device(self, device_id: str) -> None:
@@ -162,11 +204,19 @@ class AudioSection(SettingsSection):
         if row is None:
             return
         self.settings.audio.device_id = device_id or None
-        self.settings.audio.device_name = row.button.text()
+        self.settings.audio.device_name = row.device_name
         row.attach(self.meter)
         self.apply("audio")
         if not self._muted:
             self.restart_capture_requested.emit()
+
+    def _on_source(self, index: int) -> None:
+        self.settings.audio.source = self.source.itemData(index)
+        self.settings.audio.device_id = None
+        self.settings.audio.device_name = ""
+        self.apply("audio")
+        self.refresh()
+        self.restart_capture_requested.emit()
 
     def _on_sensitivity(self, index: int) -> None:
         self.settings.captions.speech_sensitivity = str(
@@ -176,6 +226,4 @@ class AudioSection(SettingsSection):
 
 
 def _find(rows: list[_DeviceRow], device_id: str | None) -> _DeviceRow | None:
-    if not device_id:
-        return None
     return next((row for row in rows if row.device_id == device_id), None)

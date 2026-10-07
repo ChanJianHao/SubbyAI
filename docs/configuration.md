@@ -8,12 +8,13 @@ Advanced Mode. Hiding Advanced Mode never resets values, providers or credential
 
 | Choice | Behavior |
 |---|---|
-| Audio source | Follow the default output or select a named device |
+| Audio source | System audio or Microphone; follow that source's default or select a named device |
 | Language you'll hear | Automatic detection or an explicit input language |
 | Subtitle language | Translation target; disable translation for original-only captions |
 | Fast | Lightweight model, 3-second maximum phrases, 0.35-second silence, beam 1 |
 | Balanced | Hardware recommendation capped at Detailed, 6 seconds, 0.5-second silence, beam 1 |
 | Accurate | Detailed when the computer can support it, 10 seconds, 0.7-second silence, beam 3 |
+| Maximum Quality | Strongest supported model, 12 seconds, 0.8-second silence, beam 5; highest resource use |
 | Custom | Your technical changes remain active; choose a profile explicitly to replace them |
 | Save my transcripts | Off by default; explicit preferences are preserved |
 
@@ -32,6 +33,10 @@ These changes reconnect a running session after the previous workers finish.
 Device, precision and beam size apply to Whisper; Parakeet uses CPU/int8 and
 honors the CPU thread setting. Vocabulary hints apply to Whisper. Parakeet has
 no automatic language detection: select the input language when translating.
+Automatic CPU threads leave about half the physical cores for playback and other apps.
+The warm-model timer releases speech RAM/VRAM two minutes after stopping by default.
+Set it to zero for immediate release or up to 30 minutes for quicker repeated starts.
+Downloaded model files remain on disk until you remove them in Models & providers.
 
 **Remote processing** keeps local speech as the default. A remote choice needs a validated
 URL, server model and explicit consent for that address. Keys use the OS credential store.
@@ -49,9 +54,28 @@ Custom controls include installed font family and weight, size, original and tra
 outline width, shadow, background opacity, padding, corner radius, alignment, width, caption
 history depth and a 1–8 line limit per language. Clipped overlay text ends in an ellipsis; the
 complete caption remains in the Live page and saved history when enabled.
+Use **Make this look my own** to start customizing a built-in look, then **Save this look**
+to name it. Up to 20 saved looks retain appearance and behavior, excluding display names
+and geometry. Select a saved look to apply it immediately. Always-on-top is optional.
+Settings → General → App text size offers 125% and 150% independently of subtitle size
+and operating-system display scaling. An oversized overlay is constrained to the available
+display; fewer caption pairs can be visible when there is insufficient vertical space.
+
+## Storage choices
+
+Saving transcripts is opt-in. Settings → General lets you keep originals, translations,
+both, or just session dates and language choices. No foreground app names are collected.
+Excluded text is removed before the SQLite writer queue. Translation-only storage saves
+only successful translations. **Until I stop captioning** writes no session history to disk
+and clears Live when stopped; **Clear the Live transcript when I stop** works with any policy.
+These choices apply to new captions. Previously saved sessions remain until you delete them
+or retention expires. A fresh live-only installation creates no transcript database.
+Audio and temporary speech files are never written by the live pipeline, so there is no
+audio-recording toggle. Diagnostic logs contain operational events rather than captions.
 
 Choose a display, drag the overlay in placement mode and enable click-through when ready.
 Placement uses Qt's logical screen coordinates, including displays left of or above the primary.
+Display and DPI changes reflow captions and constrain the panel to the available area.
 If a display disappears, the overlay moves back onto an available screen. Mixed-DPI behavior
 still needs the physical-monitor checks in the release checklist.
 

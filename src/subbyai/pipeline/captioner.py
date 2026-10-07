@@ -310,6 +310,7 @@ class Captioner(QObject):
                     engine.close()
             self._ring.clear()
             self._discard_queues()
+            self._context.clear()
             # The engine is intentionally NOT unloaded: the cache keeps it warm
             # so the next start does not pay the model load again.
             if self._phase is not PipelinePhase.FAILED:

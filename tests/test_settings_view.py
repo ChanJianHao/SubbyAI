@@ -79,6 +79,7 @@ class FakeDevice:
         self.id = device_id
         self.name = name
         self.is_default = is_default
+        self.source = "system"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -256,7 +257,7 @@ def test_choosing_a_device_stores_it_and_asks_for_a_restart(settings_store, spy)
     view.restart_capture_requested.connect(lambda: restarts.append(1))
     spy.reset()
 
-    view.audio._rows[1].button.click()
+    view.audio._rows[2].button.click()
     assert settings_store.settings.audio.device_id == "b"
     assert spy.calls == ["audio"]
     assert restarts == [1]

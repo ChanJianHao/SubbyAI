@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 from ..core.settings import SettingsStore
 from ..languages import AUTO_DETECT, AUTO_DETECT_LABEL, sorted_languages
 from ..translation import BUILTIN_PROVIDER_ID
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_intelligence import builtin_config, provider_tier
 from .settings_widgets import Group, LanguagePicker, PrivacyBadge, SettingsSection, show_tier
 from .tokens import SPACE

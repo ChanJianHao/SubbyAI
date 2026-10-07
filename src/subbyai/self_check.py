@@ -102,12 +102,16 @@ def _check_ui() -> list[str]:
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
+        from PySide6.QtCore import QEventLoop, QTimer
         from PySide6.QtGui import QFontDatabase
         from PySide6.QtWidgets import QApplication, QWidget
 
+        from .core.events import CaptionSegment
+        from .core.health import HealthReport, HealthState
         from .core.settings import SettingsStore
         from .ui import theme
         from .ui.live_view import LiveView
+        from .ui.motion import policy
         from .ui.overlay import CaptionOverlay
         from .ui.settings_view import SettingsView
         from .ui.shell import Shell
@@ -124,19 +128,40 @@ def _check_ui() -> list[str]:
             store = SettingsStore(profile)
             theme.apply(app, "dark", "sakura")
             shell = Shell(store.settings)
-            shell.add_surface(LiveView(store.settings))
+            live = LiveView(store.settings)
+            shell.add_surface(live)
             shell.add_surface(QWidget())
-            shell.add_surface(SettingsView(store))
+            settings = SettingsView(store)
+            shell.add_surface(settings)
             overlay = CaptionOverlay(store.settings)
+            shell.show()
             app.processEvents()
             if shell.minimumSizeHint().width() > 640:
                 return ["the settings layout exceeds the supported minimum width"]
+            for index in (1, 2, 0, 2, 0):
+                shell.show_segment(index)
+                if shell.current_segment != index:
+                    return ["page navigation did not settle on the requested surface"]
+            live.set_health(HealthReport(HealthState.STARTING))
+            live.set_download_progress(0.6, "Checking download feedback")
+            live.add_segment(CaptionSegment(text="Subtitles are ready.", language="en"))
+            loop = QEventLoop()
+            QTimer.singleShot(300, loop.quit)
+            loop.exec()
+            if not shell.stack._snapshot.pixmap.isNull() or live.progress.value() != 60:
+                return ["the motion or progress state did not settle"]
+            live.hide_download_progress()
+            policy().configure(True)
+            shell.show_segment(2)
+            if not shell.stack._snapshot.pixmap.isNull():
+                return ["reduced motion left a page transition running"]
+            policy().configure(False)
             overlay.close()
             shell.close()
             shell.deleteLater()
             overlay.deleteLater()
             app.processEvents()
-        print("Qt surfaces: OK (temporary profile, no audio capture)")
+        print(f"Qt surfaces and motion: OK ({app.platformName()}, temporary profile)")
     except Exception as exc:
         return [f"Qt surfaces: {exc}"]
     return []

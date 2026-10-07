@@ -1,4 +1,4 @@
-"""Windows capture backend: WASAPI loopback via PyAudioWPatch.
+"""Windows system-sound and microphone capture via WASAPI/PyAudioWPatch.
 
 Uses PortAudio's callback mode so audio arrives on PortAudio's own thread. That
 thread is real-time: the callback converts int16 to float32 and hands the block
@@ -20,6 +20,7 @@ from .base import (
     AudioDevice,
     DeviceChangeCallback,
     DevicePoller,
+    resolve_device,
 )
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,28 @@ class WasapiLoopbackCapture(AudioCapture):
                             channels=max(1, int(info["maxInputChannels"])),
                             is_loopback=True,
                             is_default=info["index"] == default_index,
+                        )
+                    )
+                # Restrict inputs to WASAPI: other host APIs repeat the same
+                # microphones under different indices and often older formats.
+                host = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+                default_input = host.get("defaultInputDevice", -1)
+                for index in range(pa.get_device_count()):
+                    info = pa.get_device_info_by_index(index)
+                    if (
+                        info["hostApi"] != host["index"]
+                        or info["maxInputChannels"] < 1
+                        or info.get("isLoopbackDevice", False)
+                    ):
+                        continue
+                    devices.append(
+                        AudioDevice(
+                            id=str(info["index"]),
+                            name=str(info["name"]),
+                            sample_rate=int(info["defaultSampleRate"]),
+                            channels=min(2, int(info["maxInputChannels"])),
+                            is_loopback=False,
+                            is_default=info["index"] == default_input,
                         )
                     )
         except Exception as exc:
@@ -101,7 +124,7 @@ class WasapiLoopbackCapture(AudioCapture):
                 self._teardown()
                 raise AudioCaptureError.for_device(device.name, exc) from exc
 
-            log.info("Capturing from '%s' (%d Hz, %d ch, loopback)", device.name, rate, channels)
+            log.info("Audio capture opened (%d Hz, %d ch, %s)", rate, channels, device.source)
             return device
 
     def stop(self) -> None:
@@ -124,7 +147,10 @@ class WasapiLoopbackCapture(AudioCapture):
     def device_signature(cls) -> str:
         """Include every output, its format, and which output is now default."""
         return repr(
-            sorted((d.name, d.sample_rate, d.channels, d.is_default) for d in cls.list_devices())
+            sorted(
+                (d.id, d.name, d.sample_rate, d.channels, d.is_default, d.is_loopback)
+                for d in cls.list_devices()
+            )
         )
 
     @staticmethod
@@ -144,26 +170,24 @@ class WasapiLoopbackCapture(AudioCapture):
     # ---------- internals ----------
 
     def _default_device(self) -> AudioDevice:
-        devices = self.list_devices()
-        device = next((d for d in devices if d.is_default), None) or (
-            devices[0] if devices else None
-        )
-        if device is None:
-            raise AudioCaptureError(
-                "No loopback audio devices found",
-                "No playback device was found to listen to. "
-                "Connect speakers or headphones and try again.",
-            )
+        device = resolve_device(self.list_devices(), None, strict=True)
+        assert device is not None
         return device
 
     def _teardown(self) -> None:
-        if self._stream is not None:
+        stream, self._stream = self._stream, None
+        pa, self._pa = self._pa, None
+        if stream is not None:
             try:
-                self._stream.stop_stream()
-                self._stream.close()
+                stream.stop_stream()
+            except Exception:
+                log.warning("Error stopping audio stream", exc_info=True)
+            try:
+                stream.close()
             except Exception:
                 log.warning("Error closing audio stream", exc_info=True)
-            self._stream = None
-        if self._pa is not None:
-            self._pa.terminate()
-            self._pa = None
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                log.warning("Error releasing audio driver", exc_info=True)

@@ -22,16 +22,18 @@ loopback device:
 1. Install [BlackHole 2ch](https://existential.audio/blackhole/) (free, open source).
 2. In **Audio MIDI Setup**, create a **Multi-Output Device** containing both your speakers and
    BlackHole 2ch, and select it as the system output — so you still hear everything.
-3. In SubbyAI, choose **BlackHole 2ch** as the source. Loopback-style devices are listed first.
+3. In SubbyAI, choose **System audio**, then **BlackHole 2ch** as the device.
 
-To caption a microphone instead (a meeting room, a lecture), just select it; macOS asks for
-microphone permission once.
+To caption a microphone instead, choose **Microphone** on Live or in Everyday settings, then
+select your default or named microphone. These sources are separate: a missing loopback device
+never opens a microphone automatically. V1 captures one source at a time.
 
 V1 uses input/loopback devices; native per-application system-audio capture is not supported.
 
 ## Permissions
 
-- **Microphone** — only when you pick an input device.
+- **Microphone** — macOS permission for CoreAudio input capture, including a virtual loopback
+  input. Allow SubbyAI in System Settings → Privacy & Security → Microphone when prompted.
 - No screen recording or accessibility permission is used. Optional remote servers receive audio only after your consent.
 
 ## Known gaps on macOS

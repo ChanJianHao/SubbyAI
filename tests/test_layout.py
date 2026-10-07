@@ -179,3 +179,15 @@ def test_nothing_is_wider_than_the_window_it_lives_in(surfaces):
                 f"needs {child.minimumSizeHint().width()}px"
             )
     assert not offenders, "; ".join(sorted(set(offenders)))
+
+
+def test_large_app_text_keeps_settings_reachable(surfaces, qt_app):
+    theme.apply(qt_app, "dark", text_scale=1.5)
+    shell = surfaces["shell"]
+    shell.resize(640, 460)
+    shell.show_segment(2)
+    shell.show()
+    QApplication.processEvents()
+    for area in surfaces["settings"].findChildren(QAbstractScrollArea):
+        assert area.horizontalScrollBar().maximum() == 0
+    theme.apply(qt_app, "dark")

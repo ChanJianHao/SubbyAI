@@ -12,9 +12,11 @@ import threading
 from typing import Any
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QProgressBar, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from ...core.settings import TIER_MODELS, QualityTier
+from ..motion import confirm_action, reveal
+from ..motion_widgets import SmoothProgressBar as QProgressBar
 from ..widgets import TIER_LABELS as TIER_TITLES
 from ..widgets import size_text as _size_text
 from .common import Group, hint_label
@@ -150,7 +152,9 @@ class QualityPicker(QWidget):
         self._cancel = threading.Event()
         self.download_button.setEnabled(False)
         self.progress.setValue(0)
-        self.progress.setVisible(True)
+        self.progress.reset()
+        self.progress.setTextVisible(False)
+        reveal(self.progress, True)
         models = self._models
 
         def run() -> None:
@@ -170,17 +174,19 @@ class QualityPicker(QWidget):
         self._cancel.set()
 
     def _on_progress(self, fraction: float, message: str) -> None:
-        self.progress.setValue(int(fraction * 100))
+        self.progress.setRange(0, 100 if fraction >= 0 else 0)
+        self.progress.setValue(int(max(0, fraction) * 100))
         if message:
             self.note.setText(message)
             self.note.setVisible(True)
 
     def _on_finished(self, ok: bool, message: str) -> None:
         self.download_button.setEnabled(True)
-        self.progress.setVisible(False)
+        reveal(self.progress, False)
         if not ok:
             self.note.setText(message or "The download didn't finish. Try again in a moment.")
             self.note.setVisible(True)
             return
         self.refresh_states()
+        confirm_action(self.download_button, "Ready ✓")
         self.download_completed.emit()

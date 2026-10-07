@@ -12,7 +12,6 @@ from typing import Any
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -30,6 +29,8 @@ from ..branding import (
     VERSION,
 )
 from ..core.settings import SettingsStore
+from .motion import Expandable, policy, reveal
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_widgets import Group, SettingsSection, hint_label
 from .tokens import SPACE
 from .widgets import compact_combo
@@ -100,6 +101,16 @@ class GeneralSection(SettingsSection):
 
     def _build_appearance(self) -> Group:
         group = Group("Appearance")
+        self.text_scale = compact_combo(QComboBox(self))
+        for label, scale in (("Standard", 1.0), ("Larger · 125%", 1.25), ("Largest · 150%", 1.5)):
+            self.text_scale.addItem(label, scale)
+        self.text_scale.activated.connect(self._on_text_scale)
+        group.add_row(
+            "App text size",
+            self.text_scale,
+            "Scales the app's controls in addition to your display scaling. "
+            "Subtitle size is set separately in Captions.",
+        )
         self.theme_choice = compact_combo(QComboBox(self))
         for label, value in THEMES:
             self.theme_choice.addItem(label, value)
@@ -110,6 +121,12 @@ class GeneralSection(SettingsSection):
             self.accent_choice.addItem(accent.title(), accent)
         self.accent_choice.currentIndexChanged.connect(self._on_accent)
         group.add_row("A little colour", self.accent_choice)
+        self.reduce_motion = QCheckBox(self)
+        self.reduce_motion.toggled.connect(self._on_reduce_motion)
+        group.add_row(
+            "Reduce motion", self.reduce_motion,
+            "Keep transitions still. Your system's reduced-motion preference is always respected.",
+        )
         self.app_language = compact_combo(QComboBox(self))
         self.app_language.addItem("English", "en")
         self.app_language.setEnabled(False)
@@ -147,6 +164,26 @@ class GeneralSection(SettingsSection):
             self.retention.addItem(label, days)
         self.retention.currentIndexChanged.connect(self._on_retention)
         self.retention_row = group.add_row("Keep them for", self.retention)
+        self.save_original = QCheckBox("Save original words", self)
+        self.save_translation = QCheckBox("Save translated subtitles", self)
+        self.clear_live_on_stop = QCheckBox("Clear the Live transcript when I stop", self)
+        for name, control in (
+            ("save_original", self.save_original),
+            ("save_translation", self.save_translation),
+            ("clear_live_on_stop", self.clear_live_on_stop),
+        ):
+            control.toggled.connect(
+                lambda checked, name=name: self._on_storage_policy(name, checked)
+            )
+            group.add(control)
+        group.add(
+            hint_label(
+                "Untick both text choices to keep only session dates and languages. "
+                "Until I stop captioning keeps everything in memory. "
+                "Changing these choices affects new captions; earlier saved sessions remain "
+                "until you delete them. Audio and temporary speech files are never saved."
+            )
+        )
         self.storage_label = QLabel("", self)
         self.storage_label.setObjectName("tertiary")
         group.add(self.storage_label)
@@ -187,12 +224,17 @@ class GeneralSection(SettingsSection):
     def refresh(self) -> None:
         general = self.settings.general
         with self.quiet():
+            self.text_scale.setCurrentIndex(max(0, self.text_scale.findData(general.text_scale)))
             self.theme_choice.setCurrentIndex(max(0, self.theme_choice.findData(general.theme)))
             self.accent_choice.setCurrentIndex(max(0, self.accent_choice.findData(general.accent)))
+            self.reduce_motion.setChecked(general.reduce_motion)
             self.close_to_tray.setChecked(general.close_to_tray)
             self.start_with_os.setChecked(general.start_with_os)
             self.autostart_captions.setChecked(general.autostart_captions)
             self.keep_history.setChecked(self.settings.history.enabled)
+            self.save_original.setChecked(self.settings.history.save_original)
+            self.save_translation.setChecked(self.settings.history.save_translation)
+            self.clear_live_on_stop.setChecked(self.settings.history.clear_live_on_stop)
             index = self.retention.findData(self.settings.history.retention_days)
             self.retention.setCurrentIndex(max(0, index))
         self._sync_enabled()
@@ -213,6 +255,13 @@ class GeneralSection(SettingsSection):
     def _sync_enabled(self) -> None:
         self.autostart_row.setEnabled(self.settings.general.start_with_os)
         self.retention_row.setEnabled(self.settings.history.enabled)
+        storing = self.settings.history.enabled and self.settings.history.retention_days != -1
+        self.save_original.setEnabled(storing)
+        self.save_translation.setEnabled(storing)
+
+    def _on_storage_policy(self, name: str, checked: bool) -> None:
+        setattr(self.settings.history, name, checked)
+        self.apply("history")
 
     def _on_accent(self, index: int) -> None:
         self.settings.general.accent = self.accent_choice.itemData(index)
@@ -222,6 +271,15 @@ class GeneralSection(SettingsSection):
 
     def _on_theme(self, index: int) -> None:
         self.settings.general.theme = str(self.theme_choice.itemData(index) or "system")
+        self.apply("general")
+
+    def _on_reduce_motion(self, checked: bool) -> None:
+        self.settings.general.reduce_motion = checked
+        policy().configure(checked)
+        self.apply("general")
+
+    def _on_text_scale(self, index: int) -> None:
+        self.settings.general.text_scale = self.text_scale.itemData(index)
         self.apply("general")
 
     def _on_tray(self, checked: bool) -> None:
@@ -244,15 +302,16 @@ class GeneralSection(SettingsSection):
 
     def _on_retention(self, index: int) -> None:
         self.settings.history.retention_days = int(self.retention.itemData(index))
+        self._sync_enabled()
         self.apply("history")
 
     def request_delete(self) -> None:
         """Asking is a separate act from doing; the store is not touched yet."""
-        self.confirm_box.setVisible(True)
+        reveal(self.confirm_box, True)
         self.delete_button.setVisible(False)
 
     def cancel_delete(self) -> None:
-        self.confirm_box.setVisible(False)
+        reveal(self.confirm_box, False)
         self.delete_button.setVisible(True)
 
     def confirm_delete(self) -> None:
@@ -305,8 +364,9 @@ class AboutSection(QWidget):
         self.licences_button.clicked.connect(self.toggle_licences)
         credits.add(self.licences_button)
         self.licences = hint_label(LICENCES)
-        self.licences.setVisible(False)
-        credits.add(self.licences)
+        self.licences_reveal = Expandable(self.licences)
+        self.licences_reveal.set_expanded(False)
+        credits.add(self.licences_reveal)
         self.source_button = QPushButton("Open the source code", self)
         self.source_button.setObjectName("quiet")
         self.source_button.clicked.connect(lambda: _open(HOMEPAGE_URL))
@@ -318,8 +378,8 @@ class AboutSection(QWidget):
         column.addWidget(credits)
 
     def toggle_licences(self) -> None:
-        showing = not self.licences.isVisible()
-        self.licences.setVisible(showing)
+        showing = not self.licences_reveal.expanded
+        self.licences_reveal.set_expanded(showing)
         self.licences_button.setText("Hide licences" if showing else "Show licences")
 
 

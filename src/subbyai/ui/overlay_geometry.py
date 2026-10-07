@@ -45,8 +45,7 @@ def rect_from(saved: list[int] | None, min_width: int) -> QRect | None:
 def is_on_a_screen(rect: QRect) -> bool:
     """Whether the panel's centre lands on a display the user can actually see."""
     return any(
-        screen.availableGeometry().contains(rect.center())
-        for screen in QGuiApplication.screens()
+        screen.availableGeometry().contains(rect.center()) for screen in QGuiApplication.screens()
     )
 
 
@@ -54,10 +53,25 @@ def default_rect(widget: QWidget, min_width: int, height: int) -> QRect:
     """Centred near the bottom of the widget's screen."""
     screen = widget.screen() or QGuiApplication.primaryScreen()
     area = screen.availableGeometry() if screen else QRect(0, 0, 1280, 720)
-    width = max(min_width, min(area.width(), int(area.width() * DEFAULT_WIDTH_RATIO)))
+    width = min(area.width(), max(min_width, int(area.width() * DEFAULT_WIDTH_RATIO)))
+    return clamp_rect(
+        QRect(
+            area.x() + (area.width() - width) // 2,
+            area.y() + area.height() - int(area.height() * BOTTOM_INSET_RATIO) - height,
+            width,
+            height,
+        ),
+        area,
+    )
+
+
+def clamp_rect(rect: QRect, area: QRect) -> QRect:
+    """Keep the entire overlay reachable, including on small logical displays."""
+    width = min(rect.width(), area.width())
+    height = min(rect.height(), area.height())
     return QRect(
-        area.x() + (area.width() - width) // 2,
-        area.y() + area.height() - int(area.height() * BOTTOM_INSET_RATIO) - height,
+        max(area.left(), min(rect.x(), area.right() - width + 1)),
+        max(area.top(), min(rect.y(), area.bottom() - height + 1)),
         width,
         height,
     )

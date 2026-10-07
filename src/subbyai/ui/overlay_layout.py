@@ -14,7 +14,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QFontMetricsF, QPainterPath, QStaticText, QTransform
+from PySide6.QtGui import (
+    QFont,
+    QFontMetricsF,
+    QPainterPath,
+    QStaticText,
+    QTextLayout,
+    QTextOption,
+    QTransform,
+)
 
 from ..core.events import CaptionSegment, PrivacyTier, TranslationState
 from ..core.settings import OriginalPosition
@@ -175,51 +183,28 @@ def build_notice(text: str, style: OverlayStyle, fonts: OverlayFonts, width: flo
     return PairLayout(0, lines, height)
 
 
-def wrap_lines(text: str, metrics: QFontMetricsF, width: float) -> list[str]:
-    """Greedy word wrap that also breaks tokens wider than the panel.
-
-    Spec §3.2 asks for a middle ellipsis on overlong words. Breaking instead of
-    eliding is deliberate: scripts without spaces (Japanese, Chinese) arrive as
-    one token, and a captioner that drops the middle of a sentence is worse than
-    one that uses another line.
-    """
+def wrap_lines(text: str, font: QFont, width: float) -> list[str]:
+    """Qt's Unicode line breaking preserves glyph clusters and shapes RTL text."""
     flat = " ".join(text.split())
     if not flat:
         return []
     if width <= 0:
         return [flat]
-    lines: list[str] = []
-    current = ""
-    for word in flat.split(" "):
-        for piece in _fit_pieces(word, metrics, width):
-            candidate = f"{current} {piece}" if current else piece
-            if current and metrics.horizontalAdvance(candidate) > width:
-                lines.append(current)
-                current = piece
-            else:
-                current = candidate
-    if current:
-        lines.append(current)
-    return lines
-
-
-# ---------- internals ----------
-
-
-def _fit_pieces(word: str, metrics: QFontMetricsF, width: float) -> list[str]:
-    if metrics.horizontalAdvance(word) <= width:
-        return [word]
-    pieces: list[str] = []
-    current = ""
-    for char in word:
-        if current and metrics.horizontalAdvance(current + char) > width:
-            pieces.append(current)
-            current = char
-        else:
-            current += char
-    if current:
-        pieces.append(current)
-    return pieces
+    layout = QTextLayout(flat, font)
+    option = QTextOption()
+    option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    layout.setTextOption(option)
+    # Qt indices count UTF-16 code units; Python counts Unicode code points.
+    encoded = flat.encode("utf-16-le")
+    lines = []
+    layout.beginLayout()
+    while (line := layout.createLine()).isValid():
+        line.setLineWidth(max(1.0, width))
+        start = line.textStart() * 2
+        end = start + line.textLength() * 2
+        lines.append(encoded[start:end].decode("utf-16-le").strip())
+    layout.endLayout()
+    return [line for line in lines if line]
 
 
 def _lay(
@@ -236,7 +221,7 @@ def _lay(
     height = _line_height(font, metrics, style.line_spacing)
     lead = (height - metrics.height()) / 2.0
     boxes: list[LineBox] = []
-    wrapped = wrap_lines(text, metrics, width)
+    wrapped = wrap_lines(text, font, width)
     if len(wrapped) > style.max_lines:
         wrapped = wrapped[: style.max_lines]
         wrapped[-1] = metrics.elidedText(wrapped[-1] + " …", Qt.TextElideMode.ElideRight, width)

@@ -11,17 +11,25 @@ import threading
 
 import numpy as np
 
-from .base import AudioCallback, AudioCapture, AudioCaptureError, AudioDevice
+from .base import (
+    AudioCallback,
+    AudioCapture,
+    AudioCaptureError,
+    AudioDevice,
+    DevicePoller,
+    resolve_device,
+)
 
 log = logging.getLogger(__name__)
 
-_LOOPBACK_HINTS = ("blackhole", "loopback", "soundflower", "virtual")
+_LOOPBACK_HINTS = ("blackhole", "loopback", "soundflower")
 
 
 class CoreAudioInputCapture(AudioCapture):
     def __init__(self) -> None:
         self._stream = None
         self._lock = threading.Lock()
+        self._poller: DevicePoller | None = None
 
     @staticmethod
     def list_devices() -> list[AudioDevice]:
@@ -61,15 +69,8 @@ class CoreAudioInputCapture(AudioCapture):
                 )
 
             if device is None:
-                devices = self.list_devices()
-                if not devices:
-                    raise AudioCaptureError(
-                        "No input audio devices found",
-                        "Nothing was found that can hear your computer's audio. "
-                        "To caption system audio, install the free loopback driver "
-                        "BlackHole before captions can start.",
-                    )
-                device = devices[0]
+                device = resolve_device(self.list_devices(), None, strict=True)
+                assert device is not None
 
             rate = device.sample_rate
 
@@ -93,18 +94,42 @@ class CoreAudioInputCapture(AudioCapture):
                 )
                 self._stream.start()
             except Exception as exc:
-                self._stream = None
+                self._close_stream()
                 raise AudioCaptureError.for_device(device.name, exc) from exc
 
-            log.info("Capturing from '%s' (%d Hz, %d ch)", device.name, rate, device.channels)
+            log.info(
+                "Audio capture opened (%d Hz, %d ch, %s)", rate, device.channels, device.source
+            )
             return device
 
     def stop(self) -> None:
         with self._lock:
-            if self._stream is not None:
+            self._close_stream()
+
+    def _close_stream(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            for action in (stream.stop, stream.close):
                 try:
-                    self._stream.stop()
-                    self._stream.close()
+                    action()
                 except Exception:
-                    log.warning("Error closing audio stream", exc_info=True)
-                self._stream = None
+                    log.warning("Error releasing audio stream", exc_info=True)
+
+    def watch_devices(self, callback) -> None:
+        self.unwatch()
+        self._poller = DevicePoller(self.device_signature, callback)
+        self._poller.start()
+
+    def unwatch(self) -> None:
+        if self._poller is not None:
+            self._poller.stop()
+            self._poller = None
+
+    @classmethod
+    def device_signature(cls) -> str:
+        return repr(
+            sorted(
+                (d.id, d.name, d.sample_rate, d.channels, d.is_default, d.is_loopback)
+                for d in cls.list_devices()
+            )
+        )

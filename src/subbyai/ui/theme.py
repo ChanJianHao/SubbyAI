@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import weakref
 from collections.abc import Callable
 
@@ -19,6 +20,8 @@ _listeners: list[Callable[[Palette], None] | weakref.WeakMethod] = []
 _current: Palette = tokens.DARK
 _theme_setting = "system"
 _accent_setting = "sakura"
+_text_scale = 1.0
+_fonts_loaded = False
 
 
 def system_is_dark() -> bool:
@@ -33,17 +36,33 @@ def current() -> Palette:
     return _current
 
 
-def apply(app: QApplication, theme_setting: str, accent: str = "sakura") -> Palette:
+def apply(
+    app: QApplication,
+    theme_setting: str,
+    accent: str = "sakura",
+    text_scale: float = 1.0,
+    reduce_motion: bool | None = None,
+) -> Palette:
     """Apply a theme and start following the OS if the setting says so."""
-    global _current, _theme_setting, _accent_setting
+    global _current, _theme_setting, _accent_setting, _text_scale
     _theme_setting = theme_setting
     _accent_setting = accent
+    _text_scale = max(1.0, min(1.5, text_scale))
+    from .motion import install, policy
+
+    install(app, policy().requested if reduce_motion is None else reduce_motion)
     app.setStyle("Fusion")
     _load_fonts()
     palette = tokens.palette_for(theme_setting, system_is_dark(), accent)
     _current = palette
     app.setFont(ui_font())
-    app.setStyleSheet(stylesheet(palette))
+    app.setStyleSheet(
+        re.sub(
+            r"font-size:\s*(\d+(?:\.\d+)?)px",
+            lambda match: f"font-size: {round(float(match[1]) * _text_scale)}px",
+            stylesheet(palette),
+        )
+    )
     _connect_system_watch(app)
     for entry in list(_listeners):
         listener = entry() if isinstance(entry, weakref.WeakMethod) else entry
@@ -76,7 +95,7 @@ def _connect_system_watch(app: QApplication) -> None:
         return
     try:
         QGuiApplication.styleHints().colorSchemeChanged.connect(
-            lambda _scheme: apply(app, _theme_setting, _accent_setting)
+            lambda _scheme: apply(app, _theme_setting, _accent_setting, _text_scale)
         )
         _watch_connected = True
     except (AttributeError, RuntimeError):
@@ -85,6 +104,10 @@ def _connect_system_watch(app: QApplication) -> None:
 
 def _load_fonts() -> None:
     """Load bundled fonts if present; system fallbacks cover their absence."""
+    global _fonts_loaded
+    if _fonts_loaded:
+        return
+    _fonts_loaded = True
     from importlib import resources
 
     try:
@@ -103,7 +126,7 @@ def _load_fonts() -> None:
 def ui_font(role: str = "body") -> QFont:
     size, weight = tokens.TYPE_SCALE.get(role, tokens.TYPE_SCALE["body"])
     font = QFont(_first_available(tokens.UI_FONT_STACK))
-    font.setPixelSize(size)
+    font.setPixelSize(round(size * _text_scale))
     font.setWeight(QFont.Weight(weight))
     return font
 

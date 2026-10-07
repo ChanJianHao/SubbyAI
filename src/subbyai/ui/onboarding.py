@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QPushButton,
     QScrollArea,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +24,7 @@ from ..asr.capability import MachineCapability
 from ..branding import APP_NAME
 from ..core.settings import Settings
 from . import theme
+from .motion import MotionStack
 from .onboarding_hardware import AudioCheckStep, QualityStep
 from .onboarding_steps import LanguageStep, ReadyStep, Step, StyleStep, UsageStep, WelcomeStep
 from .onboarding_widgets import ProgressDots
@@ -148,8 +148,15 @@ class OnboardingWizard(QDialog):
             return
         from ..audio.base import resolve_device
 
-        device = resolve_device(self._audio._devices, self.settings.audio.device_id)
-        self._audio_preview.set_active(self._steps[self.current_index] is self._audio, device)
+        device = resolve_device(
+            self._audio._devices,
+            self.settings.audio.device_id,
+            self.settings.audio.device_name,
+            source=self.settings.audio.source,
+        )
+        self._audio_preview.set_active(
+            self._steps[self.current_index] is self._audio and device is not None, device
+        )
 
     def set_level_source(self, source: Callable[[], float] | None) -> None:
         """Give the audio check something to poll: a callable returning 0..1 loudness.
@@ -178,7 +185,7 @@ class OnboardingWizard(QDialog):
         self._skip.clicked.connect(self._skip_ahead)
         root.addWidget(self._skip, 0, Qt.AlignmentFlag.AlignRight)
 
-        self._stack = QStackedWidget()
+        self._stack = MotionStack()
         for step in self._steps:
             self._stack.addWidget(step)
 

@@ -78,32 +78,14 @@ def detect(force_refresh: bool = False) -> MachineCapability:
 
 
 def recommended_tier(cap: MachineCapability | None = None) -> QualityTier:
-    """The tier to preselect for this machine.
+    """A conservative starting point that leaves room for playback and games.
 
-    Measured, not inferred from model size. The history matters because it was
-    wrong twice in opposite directions:
-
-    First it offered BALANCED to anything with 8 cores and 8 GB, on the
-    assumption that a larger model is merely slower. It was not — faster-whisper
-    padded every input to a 30-second encoder window, so ``small`` decoded real
-    two-second speech at 0.69x realtime and fell behind permanently.
-
-    Then it capped every machine without a graphics card at QUICK, which was
-    right about the symptom and wrong about the cause. With the encoder window
-    following the audio (see ``snug_window``), ``small`` measures 5.5x realtime
-    at two seconds on this six-core desktop — comfortably live. So BALANCED is
-    available again, and the core and memory floors are what they should always
-    have been: a check that the machine can hold the model, not a proxy for
-    throughput.
-
-    Re-measure with scripts/bench_asr.py, against real speech, before moving
-    any of these lines.
+    Maximum remains an explicit choice. Hardware capacity is not a throughput
+    benchmark; use real speech measurements before changing the CPU floors.
     """
     cap = cap or detect()
-    if cap.has_cuda and cap.vram_gb >= MAXIMUM_VRAM_GB:
-        return QualityTier.MAXIMUM
     if cap.has_cuda:
-        return QualityTier.DETAILED
+        return QualityTier.DETAILED if cap.vram_gb >= 4.0 else QualityTier.BALANCED
     if cap.cpu_cores >= BALANCED_CORES and cap.ram_gb >= DETAILED_RAM_GB:
         return QualityTier.BALANCED
     return QualityTier.QUICK

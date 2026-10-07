@@ -11,7 +11,7 @@ use them, so a second copy would be a second thing to keep in step.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..motion import Tween, interactive
 from ..tokens import RADIUS, SPACE
 
 __all__ = [
@@ -39,10 +40,14 @@ class StatusDot(QWidget):
         super().__init__(parent)
         self._state = state
         self.setFixedSize(10, 10)
+        self._arrival = Tween(self, lambda _value: self.update(), 1.0)
 
     def set_state(self, state: str) -> None:
+        if state == self._state:
+            return
         self._state = state
-        self.update()
+        self._arrival.value = 0.0
+        self._arrival.to(1.0)
 
     def refresh_theme(self) -> None:
         self.update()
@@ -58,7 +63,8 @@ class StatusDot(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(colour))
-        painter.drawEllipse(1, 1, 8, 8)
+        inset = 1 + (1 - self._arrival.value)
+        painter.drawEllipse(QRectF(inset, inset, 10 - inset * 2, 10 - inset * 2))
         painter.end()
 
 
@@ -81,11 +87,14 @@ class ChoiceCard(QFrame):
         super().__init__(parent)
         self.setObjectName("choicecard")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(blurb)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(84)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._checked = False
         self._reason = ""
+        self._pressed = False
 
         column = QVBoxLayout(self)
         column.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
@@ -110,6 +119,7 @@ class ChoiceCard(QFrame):
         column.addWidget(self._meta)
         column.addStretch(1)
         self.refresh_theme()
+        interactive(self)
 
     @property
     def title(self) -> str:
@@ -158,11 +168,20 @@ class ChoiceCard(QFrame):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
-            self.clicked.emit()
+            self._pressed = True
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
         super().mousePressEvent(event)
 
+    def mouseReleaseEvent(self, event) -> None:
+        if (self._pressed and event.button() == Qt.MouseButton.LeftButton and self.isEnabled()
+                and self.rect().contains(event.position().toPoint())):
+            self.clicked.emit()
+        self._pressed = False
+        super().mouseReleaseEvent(event)
+
     def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        if (self.isEnabled() and not event.isAutoRepeat()
+                and event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter)):
             self.clicked.emit()
             return
         super().keyPressEvent(event)

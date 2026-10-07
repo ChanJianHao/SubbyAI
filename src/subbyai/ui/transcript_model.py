@@ -54,11 +54,15 @@ class TranscriptModel(QAbstractListModel):
         self._segments: list[CaptionSegment] = []
         self._session: SessionInfo | None = None
         self._flash_id: int | None = None
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._finish_flash)
 
     def set_segments(
         self, segments: list[CaptionSegment], session: SessionInfo | None = None
     ) -> None:
         self.beginResetModel()
+        self._flash_timer.stop()
         self._segments = list(segments)
         self._session = session
         self._flash_id = None
@@ -109,9 +113,12 @@ class TranscriptModel(QAbstractListModel):
         row = self.row_for_segment(segment_id)
         if row < 0:
             return
+        previous = self.row_for_segment(self._flash_id) if self._flash_id is not None else -1
         self._flash_id = segment_id
+        if previous >= 0:
+            self._emit_row(previous)
         self._emit_row(row)
-        QTimer.singleShot(FLASH_MS, lambda: self._clear_flash(row))
+        self._flash_timer.start(FLASH_MS)
 
     def find_rows(self, query: str) -> list[int]:
         needle = query.strip().casefold()
@@ -126,6 +133,10 @@ class TranscriptModel(QAbstractListModel):
     def _clear_flash(self, row: int) -> None:
         self._flash_id = None
         self._emit_row(row)
+
+    def _finish_flash(self) -> None:
+        row = self.row_for_segment(self._flash_id) if self._flash_id is not None else -1
+        self._clear_flash(row)
 
     def _emit_row(self, row: int) -> None:
         index = self.index(row, 0)

@@ -17,8 +17,9 @@ flowchart LR
     I --> J[Translation attached by event ID]
     G --> K[Qt Live and overlay]
     J --> K
-    G -. when history enabled .-> L[SQLite writer queue: 512]
-    J -. when history enabled .-> L
+    G -. storage choices .-> P[Immutable persistence policy]
+    J -. storage choices .-> P
+    P --> L[SQLite writer queue: 512]
 ```
 
 ## Contracts
@@ -44,12 +45,21 @@ library cannot safely be killed from Python; shutdown continues waiting while th
 configuration. A Simple/Advanced toggle changes visibility, not engine state. Only an explicit
 profile choice rewrites its underlying model, precision and phrase settings.
 
+**Storage consent is enforced before the writer queue.** A policy removes excluded original
+or translated text before any database operation. Session-only use has no database writes;
+live-only first launches leave the database absent. Changing storage choices closes the old
+history session and applies a fresh policy to subsequent events without restarting audio.
+
 ## Audio and subtitles
 
 Capture callbacks convert/downmix and write the ring. Consumer workers resample and segment
 20 ms frames. The current detector is an adaptive energy gate, not neural Silero VAD. Phrase
 completion uses silence and maximum duration, retains preroll/overlap, and publishes real audio
 start/duration metadata. Ring discontinuities reset the segmenter so unrelated audio isn't joined.
+System sound and microphone are separate source kinds. Resolution and reconnect stay inside
+the chosen kind. Device discovery polls on a worker, so PortAudio/CoreAudio enumeration never
+blocks the UI. Unrelated device changes don't restart the active capture. A vanished selected
+device pauses capture until it returns or the user chooses a replacement.
 
 Whisper and Parakeet provide phrase-final results. This is not token streaming; partial text
 isn't repeatedly painted. `pipeline/reconciliation.py` trims duplicate prefixes only for
@@ -60,6 +70,10 @@ are treated as unknown rather than given fabricated scores.
 Overlay wrapping limits lines per language and ellipsizes the final line. Its stable card width,
 minimum dwell and caption history control readability. The overlay stores display preference and
 geometry in logical coordinates; display removal restores an accessible placement.
+Qt's Unicode line breaking preserves grapheme clusters; font merging supplies missing glyphs
+from available system fonts. Saved appearance snapshots exclude display and session metadata.
+One speech engine is cached across starts and released after the configurable idle timeout.
+Loading and eviction share a lifecycle lock; live inference is never unloaded by the idle timer.
 
 ## Modules and extension points
 

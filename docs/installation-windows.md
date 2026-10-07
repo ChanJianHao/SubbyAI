@@ -3,7 +3,7 @@
 ## Requirements
 
 - Windows 10 1809+ x64 or Windows 11
-- ~3 GB for the installed app (allow 4 GB while downloading/installing), plus the caption engine you choose (about 148 MB to 3.1 GB)
+- ~3 GB for the installed app (allow 4 GB while downloading/installing), plus the caption engine you choose (about 78 MB to 3.1 GB)
 - Optional: an NVIDIA graphics card for the fastest, most accurate captions
 
 ## Install
@@ -11,8 +11,10 @@
 1. Download `SubbyAI-Setup-<version>.exe` from
    [Releases](https://github.com/ChanJianHao/SubbyAI/releases).
 2. Run it. The installer is per-user — **no administrator rights**.
-3. Launch SubbyAI. Setup takes about a minute: what you want to caption, how good captions should be,
-   which languages, and how they should look. Every step can be skipped.
+3. Launch SubbyAI. Guided setup chooses a source, quality, languages and subtitle appearance.
+   The audio meter helps confirm your selected device. Every step can be skipped.
+4. Press Start. Your first model download may take several minutes; progress and cancellation
+   are available in Live. Later starts use the downloaded cache.
 
 A portable `SubbyAI-portable-win-x64.zip` is also published — extract anywhere and run `SubbyAI.exe`.
 
@@ -23,6 +25,14 @@ Unsigned builds show a SmartScreen warning: **More info → Run anyway**.
 SubbyAI uses **WASAPI loopback** on the output device you pick. Whatever plays through that device
 gets captioned, whichever app produced it. No cables, no "stereo mix", no virtual drivers, and no
 microphone permission — nothing is recorded from a microphone unless you explicitly choose one.
+
+For conversations or lectures, choose **Microphone** on Live or in Everyday settings. Choose
+your default microphone or a named device. Enable microphone access for desktop applications
+in Windows Settings → Privacy & security → Microphone if the meter stays still. V1 captures one
+source at a time. It never switches from missing system audio to a microphone on its own.
+
+The release includes Python and native inference libraries. Local use does not require installing
+Python, Git, FFmpeg, a compiler, a CUDA toolkit or a model manager separately.
 
 ## Graphics card
 

@@ -6,6 +6,13 @@ PROFILES = {
     "fast": ("Fast", "Quicker captions, lighter on your computer.", 3.0, 0.35, 1),
     "balanced": ("Balanced", "A comfortable balance for everyday watching.", 6.0, 0.5, 1),
     "accurate": ("Accurate", "More context for tricky speech; captions take longer.", 10.0, 0.7, 3),
+    "maximum": (
+        "Maximum Quality",
+        "The strongest model that fits; highest memory use and latency.",
+        12.0,
+        0.8,
+        5,
+    ),
 }
 
 
@@ -23,6 +30,21 @@ def apply_profile(settings: Settings, profile: str, capability=None) -> None:
         tier = QualityTier.DETAILED
     if profile == "accurate" and tier_available(QualityTier.DETAILED, caps)[0]:
         tier = QualityTier.DETAILED
+    if profile == "maximum":
+        tier = next(
+            (
+                candidate
+                for candidate in (
+                    QualityTier.MAXIMUM,
+                    QualityTier.DETAILED,
+                    QualityTier.BALANCED,
+                    QualityTier.QUICK,
+                )
+                if tier_available(candidate, caps)[0]
+                and (candidate is not QualityTier.MAXIMUM or caps.vram_gb >= 6.0)
+            ),
+            QualityTier.QUICK,
+        )
     settings.captions.quality = tier
     settings.captions.model_override = ""
     settings.captions.compute_device = "auto"

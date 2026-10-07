@@ -8,12 +8,13 @@ to take. Every button is focus-less for the same reason.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPropertyAnimation, QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QPushButton, QWidget
 
 from ..core.settings import OverlayPreset
-from .tokens import DARK, DURATION, OVERLAY_PRESETS, SPACE
+from .motion import Tween
+from .tokens import DARK, OVERLAY_PRESETS, SPACE
 
 _GLASS = OVERLAY_PRESETS[OverlayPreset.GLASS]
 # Denser than the panel: the pill sits over captions, not over video.
@@ -73,8 +74,8 @@ class ControlPill(QWidget):
         self._fade = QGraphicsOpacityEffect(self)
         self._fade.setOpacity(0.0)
         self.setGraphicsEffect(self._fade)
-        self._animation = QPropertyAnimation(self._fade, b"opacity", self)
-        self._animation.setDuration(DURATION["base"])
+        self._motion = Tween(self, self._fade.setOpacity)
+        self._motion.finished.connect(self._settled)
         self.adjustSize()
         self.hide()
 
@@ -113,6 +114,7 @@ class ControlPill(QWidget):
     def _button(self, glyph: str, tooltip: str, checkable: bool = False) -> QPushButton:
         button = QPushButton(glyph, self)
         button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
         button.setCheckable(checkable)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -121,13 +123,11 @@ class ControlPill(QWidget):
         return button
 
     def _fade_to(self, target: float, animated: bool) -> None:
-        self._animation.stop()
-        if not animated:
-            self._fade.setOpacity(target)
-            return
-        self._animation.setStartValue(self._fade.opacity())
-        self._animation.setEndValue(target)
-        self._animation.start()
+        self._motion.to(target, animate=animated)
+
+    def _settled(self) -> None:
+        if self._motion.target == 0:
+            self.hide()
 
 
 def _stylesheet() -> str:

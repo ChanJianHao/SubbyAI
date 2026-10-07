@@ -49,6 +49,27 @@ def isolated_dirs(tmp_path, monkeypatch):
     yield tmp_path
 
 
+@pytest.fixture(autouse=True)
+def dispose_test_windows():
+    """Release Qt trees between tests, including hidden windows and their signals.
+
+    Closing a desktop window can hide it in the tray. Without deferred deletion,
+    later theme checks restyle every window created by earlier tests.
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    previous = set(app.topLevelWidgets()) if app else set()
+    yield
+    app = QApplication.instance()
+    if app:
+        for widget in set(app.topLevelWidgets()) - previous:
+            widget.close()
+            widget.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture
 def store(tmp_path):
     from subbyai.storage import SessionStore

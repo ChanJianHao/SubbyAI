@@ -422,4 +422,3 @@ def test_local_pack_decoder_cleans_boundaries_and_preserves_identifiers(monkeypa
     provider = ArgosProvider()
     monkeypatch.setattr(provider, "_translation_for", lambda *_: (Model(), Tokenizer()))
     assert provider._translate_hop("Hello", "en", "fr") == "Bonjour test_name."
-

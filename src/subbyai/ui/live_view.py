@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -23,8 +23,10 @@ from ..core.health import HealthReport, HealthState
 from ..core.settings import Settings
 from ..languages import language_name
 from . import theme
+from .motion import MotionStack, reveal
+from .motion_widgets import ActivityIndicator, SmoothProgressBar
 from .tokens import SPACE
-from .widgets import FlowLayout, LevelMeter, StatusBanner, preset_label
+from .widgets import FlowLayout, LevelMeter, StatusBanner, compact_combo, preset_label
 
 #: What the user sees for each health state when no captions are on screen.
 _EMPTY_STATES = {
@@ -35,6 +37,10 @@ _EMPTY_STATES = {
     HealthState.STARTING: (
         "Warming up…",
         "This takes a moment the first time after a quality change.",
+    ),
+    HealthState.DOWNLOADING: (
+        "Getting things ready…",
+        "Your subtitles will be ready as soon as the download finishes.",
     ),
     HealthState.LISTENING: (
         "Listening…",
@@ -65,12 +71,15 @@ class LiveView(QWidget):
     click_through_toggled = Signal(bool)
     banner_action = Signal(str)
     cancel_download_requested = Signal()
+    source_changed = Signal(str)
 
     def __init__(self, settings: Settings, parent: QWidget | None = None):
         super().__init__(parent)
         self._settings = settings
         self._running = False
         self._segments: list[CaptionSegment] = []
+        self._segment_blocks: dict[int, QWidget] = {}
+        self._last_health = None
         self._build()
         self.set_health(HealthReport(HealthState.OFF))
         theme.subscribe(self._theme_changed)
@@ -89,6 +98,9 @@ class LiveView(QWidget):
         self.banner = StatusBanner()
         self.banner.action_clicked.connect(self.banner_action)
         root.addWidget(self.banner)
+        self.history_warning = StatusBanner()
+        self.history_warning.action_clicked.connect(self.banner_action)
+        root.addWidget(self.history_warning)
         greeting = QHBoxLayout()
         title = QLabel("Your world, subtitled.")
         title.setObjectName("title")
@@ -104,6 +116,17 @@ class LiveView(QWidget):
         self.privacy_indicator.setWordWrap(True)
         self.privacy_indicator.setTextFormat(Qt.TextFormat.PlainText)
         root.addWidget(self.privacy_indicator)
+        self.audio_source = compact_combo(QComboBox())
+        self.audio_source.setAccessibleName("Audio source")
+        self.audio_source.addItem("System audio · videos, games and calls", "system")
+        self.audio_source.addItem("Microphone · conversations and lectures", "microphone")
+        self.audio_source.setCurrentIndex(
+            max(0, self.audio_source.findData(self._settings.audio.source))
+        )
+        self.audio_source.activated.connect(
+            lambda index: self.source_changed.emit(self.audio_source.itemData(index))
+        )
+        root.addWidget(self.audio_source)
 
         root.addWidget(self._build_preview(), stretch=1)
         root.addWidget(self._build_controls())
@@ -125,11 +148,15 @@ class LiveView(QWidget):
         top.addWidget(self._style_chip)
         layout.addLayout(top)
 
-        layout.addStretch(1)
+        self._preview_stack = MotionStack()
+        self._empty_area = QWidget()
+        empty_layout = QVBoxLayout(self._empty_area)
+        empty_layout.setContentsMargins(0, 0, 0, 0)
+        empty_layout.addStretch(1)
         from .mascot import Mochi
 
         self.mascot = Mochi(card)
-        layout.addWidget(self.mascot, 0, Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.mascot, 0, Qt.AlignmentFlag.AlignCenter)
         self._empty_title = QLabel()
         self._empty_title.setObjectName("heading")
         self._empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -137,17 +164,19 @@ class LiveView(QWidget):
         self._empty_body.setObjectName("secondary")
         self._empty_body.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_body.setWordWrap(True)
-        layout.addWidget(self._empty_title)
-        layout.addWidget(self._empty_body)
+        empty_layout.addWidget(self._empty_title)
+        empty_layout.addWidget(self._empty_body)
+        empty_layout.addStretch(1)
 
         self._caption_area = QWidget()
         self._caption_layout = QVBoxLayout(self._caption_area)
         self._caption_layout.setContentsMargins(0, 0, 0, 0)
         self._caption_layout.setSpacing(SPACE["md"])
         self._caption_layout.addStretch(1)
-        self._caption_area.hide()
-        layout.addWidget(self._caption_area, stretch=1)
-        layout.addStretch(1)
+        self._caption_layout.addStretch(1)
+        self._preview_stack.addWidget(self._empty_area)
+        self._preview_stack.addWidget(self._caption_area)
+        layout.addWidget(self._preview_stack, stretch=1)
 
         bottom = QHBoxLayout()
         self.level_meter = LevelMeter()
@@ -172,7 +201,9 @@ class LiveView(QWidget):
         self.start_button.clicked.connect(self._on_start_clicked)
         layout.addWidget(self.start_button)
 
-        self.progress = QProgressBar()
+        self.activity = ActivityIndicator()
+        layout.addWidget(self.activity)
+        self.progress = SmoothProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setMaximumWidth(220)
         self.progress.hide()
@@ -218,6 +249,9 @@ class LiveView(QWidget):
     # ---------- state ----------
 
     def sync_from_settings(self) -> None:
+        self.audio_source.setCurrentIndex(
+            max(0, self.audio_source.findData(self._settings.audio.source))
+        )
         settings = self._settings
         from ..translation.base import tier_for_url
         from .settings_intelligence import provider_tier
@@ -262,6 +296,7 @@ class LiveView(QWidget):
         self._running = running
         self.start_button.setText("Stop captions" if running else "Start captions")
         if not running:
+            self.activity.set_busy(False)
             self.ticker.clear()
             self.level_meter.set_level(0.0)
 
@@ -277,6 +312,13 @@ class LiveView(QWidget):
             body = report.detail
         self._empty_title.setText(title)
         self._empty_body.setText(body)
+        if report.state != self._last_health:
+            self._last_health = report.state
+            self.mascot.set_mood({
+                HealthState.STARTING: "busy", HealthState.DOWNLOADING: "busy",
+                HealthState.LISTENING: "listening", HealthState.ERROR: "error",
+            }.get(report.state, "ready"))
+            self.activity.set_busy(report.state in (HealthState.STARTING, HealthState.DOWNLOADING))
         self.level_meter.set_level(report.level, report.state is HealthState.LISTENING)
         self._device_label.setText(
             f"Listening to {report.device_name}" if report.device_name else ""
@@ -284,16 +326,20 @@ class LiveView(QWidget):
         self._update_empty_visibility()
 
     def set_download_progress(self, fraction: float, message: str) -> None:
-        self.progress.setVisible(fraction >= 0)
-        self.cancel_download.setVisible(fraction >= 0)
-        self.progress.setValue(int(fraction * 100))
+        self.progress.setRange(0, 100 if fraction >= 0 else 0)
+        reveal(self.progress, True)
+        reveal(self.cancel_download, True)
+        self.progress.setValue(int(max(0, fraction) * 100))
+        self.activity.set_busy(True)
+        self.mascot.set_mood("busy")
         self._empty_title.setText("One-time download")
         self._empty_body.setText(message)
         self._update_empty_visibility()
 
     def hide_download_progress(self) -> None:
-        self.progress.hide()
-        self.cancel_download.hide()
+        reveal(self.progress, False)
+        reveal(self.cancel_download, False)
+        self.activity.set_busy(False)
 
     def add_segment(self, segment: CaptionSegment) -> None:
         self._segments.append(segment)
@@ -317,30 +363,52 @@ class LiveView(QWidget):
     # ---------- rendering ----------
 
     def _render_segments(self) -> None:
-        while self._caption_layout.count() > 1:
-            item = self._caption_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+        wanted = {segment.id for segment in self._segments}
+        for segment_id in self._segment_blocks.keys() - wanted:
+            block = self._segment_blocks.pop(segment_id)
+            self._caption_layout.removeWidget(block)
+            block.hide()
+            block.deleteLater()
         for index, segment in enumerate(self._segments):
             newest = index == len(self._segments) - 1
-            self._caption_layout.insertWidget(
-                self._caption_layout.count() - 1, self._segment_widget(segment, newest)
-            )
+            block = self._segment_blocks.get(segment.id)
+            if block is None:
+                block = self._segment_widget(segment, newest)
+                self._segment_blocks[segment.id] = block
+                self._caption_layout.insertWidget(self._caption_layout.count() - 1, block)
+                reveal(block, True)
+            else:
+                self._update_segment_widget(block, segment, newest)
         self._update_empty_visibility()
 
     def _segment_widget(self, segment: CaptionSegment, newest: bool) -> QWidget:
-        palette = theme.current()
         block = QWidget()
         layout = QVBoxLayout(block)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        translation = segment.display_translation
-        original = QLabel(segment.text)
+        original = QLabel()
         original.setTextFormat(Qt.TextFormat.PlainText)
         original.setWordWrap(True)
         original.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(original)
+        translated = QLabel()
+        translated.setTextFormat(Qt.TextFormat.PlainText)
+        translated.setWordWrap(True)
+        translated.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(translated)
+        block._original = original
+        block._translated = translated
+        self._update_segment_widget(block, segment, newest)
+        return block
+
+    def _update_segment_widget(self, block: QWidget, segment: CaptionSegment, newest: bool) -> None:
+        palette = theme.current()
+        translation = segment.display_translation
+        original, translated = block._original, block._translated
+        original.setText(segment.text)
+        translated.setText(translation or "")
+        translated.setVisible(bool(translation))
         size = 18 if newest else 15
         opacity = "" if newest else f"color: {palette.text_secondary};"
         italic = "font-style: italic;" if segment.is_uncertain else ""
@@ -349,26 +417,15 @@ class LiveView(QWidget):
             original.setStyleSheet(
                 f"font-size: {int(size * 0.8)}px; color: {palette.text_secondary}; {italic}"
             )
-            layout.addWidget(original)
-            translated = QLabel(translation)
-            translated.setTextFormat(Qt.TextFormat.PlainText)
-            translated.setWordWrap(True)
-            translated.setAlignment(Qt.AlignmentFlag.AlignCenter)
             translated.setStyleSheet(
                 f"font-size: {size}px; font-weight: 600; color: {palette.accent};"
             )
-            layout.addWidget(translated)
         else:
             original.setStyleSheet(f"font-size: {size}px; font-weight: 500; {opacity} {italic}")
-            layout.addWidget(original)
-        return block
 
     def _update_empty_visibility(self) -> None:
         has_captions = bool(self._segments)
-        self._caption_area.setVisible(has_captions)
-        self._empty_title.setVisible(not has_captions)
-        self._empty_body.setVisible(not has_captions)
-        self.mascot.setVisible(not has_captions)
+        self._preview_stack.setCurrentIndex(1 if has_captions else 0)
 
     # ---------- slots ----------
 

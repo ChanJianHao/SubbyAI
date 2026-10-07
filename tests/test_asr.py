@@ -51,11 +51,11 @@ def cap(**overrides) -> MachineCapability:
 @pytest.mark.parametrize(
     ("hardware", "expected"),
     [
-        ({"has_cuda": True, "vram_gb": 12.0}, QualityTier.MAXIMUM),
-        ({"has_cuda": True, "vram_gb": 6.0}, QualityTier.MAXIMUM),
+        ({"has_cuda": True, "vram_gb": 12.0}, QualityTier.DETAILED),
+        ({"has_cuda": True, "vram_gb": 6.0}, QualityTier.DETAILED),
         ({"has_cuda": True, "vram_gb": 4.0}, QualityTier.DETAILED),
         # Unknown VRAM must not be read as "plenty".
-        ({"has_cuda": True, "vram_gb": 0.0}, QualityTier.DETAILED),
+        ({"has_cuda": True, "vram_gb": 0.0}, QualityTier.BALANCED),
         # CPU recommendations require both core and memory floors.
         ({"cpu_cores": 16, "ram_gb": 32.0}, QualityTier.BALANCED),
         ({"cpu_cores": 8, "ram_gb": 8.0}, QualityTier.BALANCED),
@@ -85,7 +85,7 @@ def test_a_recommended_tier_can_actually_keep_up(monkeypatch):
 
 def test_recommended_tier_uses_detect_when_no_capability_given(monkeypatch):
     monkeypatch.setattr(capability, "_probe", lambda: cap(has_cuda=True, vram_gb=24.0))
-    assert recommended_tier() is QualityTier.MAXIMUM
+    assert recommended_tier() is QualityTier.DETAILED
 
 
 def test_quick_is_always_available():

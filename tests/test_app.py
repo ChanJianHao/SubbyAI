@@ -19,16 +19,21 @@ def controller(qt_app, tmp_path, monkeypatch):
 
     # Never touch audio hardware or the model cache.
     monkeypatch.setattr(app_module, "create_capture", lambda: _FakeCapture())
-    monkeypatch.setattr(
-        app_module.ModelManager, "is_downloaded", lambda self, model: True
-    )
+    monkeypatch.setattr(app_module.ModelManager, "is_downloaded", lambda self, model: True)
     store = SettingsStore(tmp_path / "settings.json")
     controller = app_module.Controller(qt_app, store)
     controller.captioner = _FakeCaptioner()
+    controller._on_devices_changed(_FakeCapture.list_devices())
     yield controller
+    controller._level_timer.stop()
+    controller._model_timer.stop()
+    controller._retention_timer.stop()
+    if controller._retention_thread:
+        controller._retention_thread.join(timeout=5)
     controller.sessions.close()
     controller.overlay.close()
     controller.shell.close()
+    controller.deleteLater()
 
 
 class _FakeCapture:
@@ -38,8 +43,12 @@ class _FakeCapture:
 
         return [
             AudioDevice(
-                id="0", name="Fake Speakers", sample_rate=16000, channels=1,
-                is_loopback=True, is_default=True,
+                id="0",
+                name="Fake Speakers",
+                sample_rate=16000,
+                channels=1,
+                is_loopback=True,
+                is_default=True,
             )
         ]
 
@@ -55,6 +64,7 @@ class _FakeCaptioner:
         self.started = 0
         self.stopped_count = 0
         self.is_active = False
+        self.has_workers = False
         self.health = HealthReport(HealthState.OFF)
         self.last_config = None
 
@@ -86,7 +96,7 @@ def test_surfaces_are_registered_in_order(controller):
 
 def test_caption_reaches_overlay_live_and_history(controller):
     controller.settings.history.enabled = True
-    controller._session_id = controller.sessions.create_session("Test")
+    controller._start_history()
     controller._on_segment(_segment("こんにちは"))
 
     assert controller.live._segments[-1].text == "こんにちは"
@@ -195,11 +205,7 @@ def test_level_tick_survives_a_stopped_pipeline(controller):
 
 
 # ---------------------------------------------------------------------------
-# Promises the app makes about privacy, enforced on the path it actually runs.
-#
-# Both of these were false. The cloud-consent gate lived in build_chain, which
-# the live pipeline never called, and the API-key store was advertised in four
-# documents and the UI while nothing ever stored a key.
+# Consent and credential storage must be enforced by the live application wiring.
 # ---------------------------------------------------------------------------
 
 
@@ -274,10 +280,85 @@ def test_the_settings_screen_can_actually_store_a_key(controller):
 def test_history_failure_does_not_break_stop_or_keep_session_ownership(controller, monkeypatch):
     import sqlite3
 
-    def failed(_session):
+    def failed(_session, **_kwargs):
         raise sqlite3.OperationalError("Database is unavailable")
 
     controller._session_id = 42
     monkeypatch.setattr(controller.sessions, "end_session", failed)
     controller._end_session()
     assert controller._session_id is None
+
+
+def test_storage_warning_survives_healthy_audio(controller):
+    controller._on_history_storage_failed()
+    controller._on_health(HealthReport(HealthState.LISTENING))
+    assert not controller.live.history_warning.isHidden()
+    assert "couldn't be saved" in controller.live.history_warning._text.text()
+
+
+def test_unrelated_device_changes_do_not_interrupt_capture(controller, monkeypatch):
+    from dataclasses import replace
+
+    from subbyai.audio.base import AudioDevice
+
+    selected = _FakeCapture.list_devices()[0]
+    controller._capture_device = selected
+    controller.settings.audio.device_id = selected.id
+    controller.settings.audio.device_name = selected.name
+    controller.captioner.is_active = True
+    restarts = []
+    monkeypatch.setattr(controller, "_restart_capture", lambda: restarts.append(True))
+    controller._on_devices_changed([
+        replace(selected, is_default=False),
+        AudioDevice("5", "Other speakers", 48000, 2, True, True),
+    ])
+    assert restarts == []
+
+
+def test_manual_stop_cancels_device_recovery(controller):
+    controller.captioner.is_active = True
+    controller._on_devices_changed([])
+    assert controller._recover_device
+    controller.stop_captions()
+    controller._on_devices_changed(_FakeCapture.list_devices())
+    assert controller.captioner.started == 0
+    assert not controller._recover_device
+
+
+def test_history_preference_change_applies_before_next_caption(controller):
+    settings = controller.settings.history
+    settings.enabled = True
+    controller.captioner.is_active = True
+    controller._start_history()
+    first = controller._session_id
+    controller._on_segment(_segment("first original", "first translation"))
+    settings.save_original = False
+    controller.store.notify("history")
+    second = controller._session_id
+    assert first != second
+    controller._on_segment(_segment("second original", "second translation"))
+    controller.sessions.flush()
+    saved = controller.sessions.segments(second)
+    assert saved[0].text == ""
+    assert saved[0].translation == "second translation"
+
+
+def test_missing_audio_is_reported_before_downloading_a_model(controller, monkeypatch):
+    downloads = []
+    controller.settings.audio.source = "microphone"
+    monkeypatch.setattr(controller.models, "is_downloaded", lambda _model: False)
+    monkeypatch.setattr(controller, "_start_download", downloads.append)
+    controller.start_captions()
+    assert not downloads and controller.captioner.started == 0
+    assert "microphone" in controller.live.banner._text.text().lower()
+
+
+def test_start_waits_for_initial_inventory_before_downloading(controller, monkeypatch):
+    downloads = []
+    controller._devices_ready = False
+    monkeypatch.setattr(controller.models, "is_downloaded", lambda _model: False)
+    monkeypatch.setattr(controller, "_start_download", downloads.append)
+    controller.start_captions()
+    assert controller._pending_start and not downloads
+    controller._on_devices_changed(_FakeCapture.list_devices())
+    assert len(downloads) == 1

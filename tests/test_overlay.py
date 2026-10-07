@@ -60,6 +60,19 @@ def _roles(pair) -> list[str]:
     return ordered
 
 
+def test_display_changes_reflow_and_keep_the_whole_overlay_visible(overlay, monkeypatch):
+    from types import SimpleNamespace
+
+    area = QRect(0, 0, 280, 600)
+    overlay.resize(900, 200)
+    overlay.show_segment(_seg("A caption that should wrap onto a narrow portrait display."))
+    monkeypatch.setattr(overlay, "screen", lambda: SimpleNamespace(availableGeometry=lambda: area))
+    overlay._display_metrics_changed()
+    assert area.contains(overlay.geometry())
+    assert overlay.width() <= area.width()
+    assert len(_lines(overlay.visible_pairs[0], ROLE_ORIGINAL)) > 1
+
+
 # ---------- the caption never moves under the reader ----------
 
 

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from subbyai.system import foreground, single_instance, window_effects
+from subbyai.system import single_instance, window_effects
 from subbyai.system.hotkeys import (
     MOD_ALT,
     MOD_CONTROL,
@@ -209,49 +209,6 @@ def test_window_effects_reject_an_unknown_backdrop():
     assert window_effects.apply_backdrop(123456789, "holographic") is False
 
 
-# ---------- foreground ----------
-
-
-def test_foreground_app_name_never_raises():
-    name = foreground.foreground_app_name()
-    assert name is None or (isinstance(name, str) and name)
-
-
-def test_is_fullscreen_foreground_never_raises():
-    assert isinstance(foreground.is_fullscreen_foreground(), bool)
-
-
-@pytest.mark.parametrize(
-    ("process_name", "expected"),
-    [
-        ("chrome.exe", "Chrome"),
-        ("Discord.exe", "Discord"),
-        ("vlc.exe", "VLC"),
-        ("obs64.exe", "OBS"),
-    ],
-)
-def test_known_processes_have_friendly_names(process_name, expected):
-    assert foreground._FRIENDLY_NAMES[process_name.lower()] == expected
-
-
-@pytest.mark.parametrize(
-    ("process_name", "expected"),
-    [
-        ("someapp.exe", "Someapp"),
-        ("OneDrive.exe", "OneDrive"),  # already branded; leave it alone
-        ("mystery", "Mystery"),
-    ],
-)
-def test_unknown_processes_are_prettified(process_name, expected):
-    assert foreground._prettify(process_name) == expected
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows has a real foreground window")
-def test_foreground_is_unavailable_off_windows():
-    assert foreground.foreground_app_name() is None
-    assert foreground.is_fullscreen_foreground() is False
-
-
 # ---------- SingleInstance ----------
 
 
@@ -332,4 +289,3 @@ def test_single_instance_uses_a_named_mutex_on_windows(instance_key):
     assert guard._handle is not None  # mutex, not a lock file
     assert guard._lock_path is None
     guard.release()
-

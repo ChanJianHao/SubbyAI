@@ -95,7 +95,7 @@ def test_accessibility_row_applies_the_whole_bundle(make_wizard):
     assert settings.overlay.preset is OverlayPreset.HIGH_CONTRAST
     assert settings.overlay.auto_hide is False
     assert settings.overlay.font_size >= 32
-    assert settings.history.enabled is True
+    assert settings.history.enabled is False  # accessibility never grants storage consent
 
 
 def test_accessibility_wins_over_games_and_unticking_restores(make_wizard):
@@ -252,6 +252,8 @@ def test_audio_check_reports_that_it_can_hear(make_wizard):
 
 def test_audio_check_names_the_silence_and_offers_a_device(make_wizard):
     class FakeDevice:
+        source = "system"
+
         def __init__(self, ident, name):
             self.id = ident
             self.name = name

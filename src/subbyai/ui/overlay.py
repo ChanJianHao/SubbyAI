@@ -18,7 +18,9 @@ Three rules explain the shapes here:
 from __future__ import annotations
 
 import logging
+import weakref
 from collections import deque
+from dataclasses import replace
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -41,6 +43,7 @@ from ..core.settings import Settings
 from ..system import window_effects
 from . import overlay_geometry as geo
 from . import overlay_paint as paint
+from .motion import EASING, policy
 from .overlay_layout import (
     PAIR_GAP,
     OverlayFonts,
@@ -107,6 +110,7 @@ class CaptionOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         self.setMinimumWidth(self.MIN_WIDTH)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, settings.overlay.always_on_top)
         self.setWindowTitle(f"{APP_NAME} captions")
 
         self._pill = ControlPill(self)
@@ -117,7 +121,9 @@ class CaptionOverlay(QWidget):
         self._pill.style_requested.connect(self.style_change_requested)
         self._pill.hide_requested.connect(self._on_hide_pressed)
 
-        self._hover_timer = _timer(self, self.HOVER_DWELL_MS, self._pill.reveal)
+        self._hover_timer = _timer(
+            self, self.HOVER_DWELL_MS, lambda: self._pill.reveal(animated=self._style.animate)
+        )
         self._auto_hide_timer = _timer(self, 4000, self._sleep)
         self._scrub_idle_timer = _timer(self, self.SCRUB_IDLE_MS, self.go_live)
         self._topmost_timer = QTimer(self)
@@ -125,9 +131,11 @@ class CaptionOverlay(QWidget):
         self._topmost_timer.timeout.connect(self._apply_topmost)
 
         self._window_fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._window_fade.setEasingCurve(EASING)
         self._enter_fade = _fade(self, DURATION["fast"], self._on_enter_value)
         self._exit_fade = _fade(self, DURATION["base"], self._on_exit_value)
         self._exit_fade.finished.connect(self._on_exit_done)
+        policy().changed.connect(self._motion_changed)
 
         self.resize(self.MIN_WIDTH, self._chrome_height())
         self.restore_geometry()
@@ -135,6 +143,32 @@ class CaptionOverlay(QWidget):
         self._preferred_screen = settings.overlay.screen_name
         self.setWindowOpacity(settings.overlay.opacity)
         self.set_click_through(settings.overlay.click_through)
+        self._watched_screens = weakref.WeakSet()
+        self._watched_window = None
+        for screen in QGuiApplication.screens():
+            self._watch_screen(screen)
+        QGuiApplication.instance().screenAdded.connect(self._watch_screen)
+        self._watch_window()
+
+    def _watch_screen(self, screen) -> None:
+        if screen not in self._watched_screens:
+            self._watched_screens.add(screen)
+            screen.availableGeometryChanged.connect(self._display_metrics_changed)
+            screen.logicalDotsPerInchChanged.connect(self._display_metrics_changed)
+
+    def _watch_window(self) -> None:
+        handle = self.windowHandle()
+        if handle is not None and handle is not self._watched_window:
+            self._watched_window = handle
+            handle.screenChanged.connect(self._display_metrics_changed)
+
+    def _display_metrics_changed(self, *_args) -> None:
+        area = self.screen().availableGeometry()
+        self.setMinimumWidth(min(self.MIN_WIDTH, area.width()))
+        self.setGeometry(geo.clamp_rect(self.geometry(), area))
+        self._fonts = OverlayFonts(self._style)
+        self._drop_retiring()
+        self._relayout()
 
     def _screen_removed(self, screen) -> None:
         if not geo.is_on_a_screen(self.geometry()):
@@ -190,6 +224,16 @@ class CaptionOverlay(QWidget):
     # ---------- appearance ----------
 
     def apply_settings(self, settings: Settings) -> None:
+        topmost = bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        if topmost != settings.overlay.always_on_top:
+            visible = self.isVisible()
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, settings.overlay.always_on_top)
+            if visible:
+                self.show()
+        if not settings.overlay.always_on_top:
+            self._topmost_timer.stop()
+        elif self.isVisible():
+            self._topmost_timer.start()
         if settings.overlay.screen_name != self._preferred_screen:
             self._preferred_screen = settings.overlay.screen_name
             self.move_to_screen(settings.overlay.screen_name)
@@ -280,11 +324,13 @@ class CaptionOverlay(QWidget):
         screen = next((s for s in QGuiApplication.screens() if s.name() == preferred), None)
         if screen is not None:
             self.setScreen(screen)
+        area = self.screen().availableGeometry()
+        self.setMinimumWidth(min(self.MIN_WIDTH, area.width()))
         saved = self._settings.overlay.geometry.get(geo.screen_signature(self))
         rect = geo.rect_from(saved, self.MIN_WIDTH)
         if rect is None or not geo.is_on_a_screen(rect):
             rect = geo.default_rect(self, self.MIN_WIDTH, max(self.height(), self._chrome_height()))
-        self.setGeometry(rect)
+        self.setGeometry(geo.clamp_rect(rect, area))
         self._relayout()
 
     def _chrome_height(self) -> int:
@@ -293,7 +339,7 @@ class CaptionOverlay(QWidget):
     # ---------- layout ----------
 
     def _relayout(self, entering: int | None = None) -> None:
-        width = max(self.MIN_WIDTH, self.width()) - self._style.pad_h * 2
+        width = max(self.minimumWidth(), self.width()) - self._style.pad_h * 2
         position = self._settings.overlay.original_position
         reserve = self._settings.translation_enabled
         segments = (
@@ -301,9 +347,28 @@ class CaptionOverlay(QWidget):
             if self._preview
             else self._visible_segments()
         )
+        area = self.screen().availableGeometry()
+        line_height = (
+            max(
+                self._fonts.for_role("translation")[1].height(),
+                self._fonts.for_role("original")[1].height(),
+            )
+            * self._style.line_spacing
+        )
+        roles = 2 if reserve and position.value != "hidden" else 1
+        budget = max(
+            1, int((area.height() - self._chrome_height() - PAIR_GAP) / max(1, line_height * roles))
+        )
+        viewport_style = replace(self._style, max_lines=min(self._style.max_lines, budget))
         pairs = [
-            build_pair(seg, self._style, self._fonts, width, position, reserve) for seg in segments
+            build_pair(seg, viewport_style, self._fonts, width, position, reserve)
+            for seg in segments
         ]
+        while len(pairs) > 1 and (
+            sum(pair.height for pair in pairs) + PAIR_GAP * (len(pairs) - 1)
+            > area.height() - self._chrome_height()
+        ):
+            pairs.pop(0)
         if entering is not None:
             self._retire(pairs)
             self._start_enter(entering)
@@ -344,7 +409,8 @@ class CaptionOverlay(QWidget):
         content = sum(pair.height for pair in pairs) + PAIR_GAP * max(0, len(pairs) - 1)
         height = round(self._chrome_height() + max(0.0, content))
         if height != self.height():
-            self.resize(max(self.MIN_WIDTH, self.width()), height)
+            self.resize(max(self.minimumWidth(), self.width()), height)
+            self.setGeometry(geo.clamp_rect(self.geometry(), self.screen().availableGeometry()))
 
     def _notice_text(self) -> str:
         report = self._health
@@ -401,13 +467,33 @@ class CaptionOverlay(QWidget):
 
     def _fade_window(self, target: float, duration: int) -> None:
         self._window_fade.stop()
-        if not self._style.animate:  # accessibility preset: instant, never a fade
+        if not self._animations_enabled():
             self.setWindowOpacity(target)
             return
         self._window_fade.setDuration(duration)
         self._window_fade.setStartValue(self.windowOpacity())
         self._window_fade.setEndValue(target)
         self._window_fade.start()
+
+    def _animations_enabled(self) -> bool:
+        return (
+            self._style.animate and not policy().reduced
+            and not self._settings.general.reduce_motion
+        )
+
+    def _motion_changed(self) -> None:
+        if self._animations_enabled():
+            return
+        if self._window_fade.state() == QAbstractAnimation.State.Running:
+            target = self._window_fade.endValue()
+            self._window_fade.stop()
+            self.setWindowOpacity(float(target))
+        self._enter_fade.stop()
+        self._drop_retiring()
+        for pair in self._pairs:
+            pair.opacity = 1.0
+        self._apply_height()
+        self.update()
 
     def _sync_mouse_transparency(self) -> None:
         """An auto-hidden panel is still mapped, so it must stop eating clicks."""
@@ -429,10 +515,14 @@ class CaptionOverlay(QWidget):
         """Fade the pair that just fell off the top instead of blinking it away."""
         keep = {pair.segment_id for pair in pairs}
         dropped = [pair for pair in self._pairs if pair.segment_id not in keep]
-        if not dropped or not self._style.animate:
+        if not dropped or not self._animations_enabled():
             self._drop_retiring()
             return
         self._retiring = dropped[0]
+        total = sum(pair.height for pair in pairs) + self._retiring.height + PAIR_GAP * len(pairs)
+        if total > self.screen().availableGeometry().height() - self._chrome_height():
+            self._drop_retiring()
+            return
         self._exit_fade.stop()
         self._exit_fade.start()
 
@@ -441,7 +531,7 @@ class CaptionOverlay(QWidget):
         self._retiring = None
 
     def _start_enter(self, segment_id: int) -> None:
-        if not self._style.animate:
+        if not self._animations_enabled():
             return
         self._entering_id = segment_id
         self._enter_fade.stop()
@@ -467,10 +557,12 @@ class CaptionOverlay(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._watch_window()
         if not geo.is_on_a_screen(self.geometry()):  # a display left since last run
             self.restore_geometry()
         self._apply_topmost()
-        self._topmost_timer.start()
+        if self._settings.overlay.always_on_top:
+            self._topmost_timer.start()
 
     def hideEvent(self, event) -> None:
         self._topmost_timer.stop()
@@ -483,6 +575,8 @@ class CaptionOverlay(QWidget):
 
     def _apply_topmost(self) -> None:
         """Re-assert always-on-top: a game takes the top slot when it focuses."""
+        if not self._settings.overlay.always_on_top:
+            return
         try:
             window_effects.set_topmost(int(self.winId()))
         except Exception:
@@ -501,7 +595,7 @@ class CaptionOverlay(QWidget):
     def leaveEvent(self, event) -> None:
         super().leaveEvent(event)
         self._hover_timer.stop()
-        self._pill.conceal()
+        self._pill.conceal(animated=self._style.animate)
         if self._scrub_offset:
             self._scrub_idle_timer.start()
         self._restart_auto_hide()
@@ -552,6 +646,7 @@ def _timer(parent: QWidget, interval: int, slot) -> QTimer:
 def _fade(parent: QWidget, duration: int, slot) -> QVariantAnimation:
     animation = QVariantAnimation(parent)
     animation.setDuration(duration)
+    animation.setEasingCurve(EASING)
     animation.setStartValue(0.0)
     animation.setEndValue(1.0)
     animation.valueChanged.connect(slot)

@@ -83,6 +83,7 @@ def micro_label(text: str) -> QLabel:
 
 def hint_label(text: str) -> QLabel:
     label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
     label.setObjectName("secondary")
     label.setWordWrap(True)
     return label
@@ -147,6 +148,16 @@ class SettingRow(QWidget):
         self._line.setSpacing(SPACE["md"])
         self._label = QLabel(label, self)
         self._label.setWordWrap(True)
+        target = control.focusProxy() or control
+        self._label.setBuddy(target)
+        if not control.accessibleName():
+            control.setAccessibleName(label)
+        if hint and not control.accessibleDescription():
+            control.setAccessibleDescription(hint)
+        if not target.accessibleName():
+            target.setAccessibleName(label)
+        if hint and not target.accessibleDescription():
+            target.setAccessibleDescription(hint)
         self._column.addLayout(self._line)
         if hint:
             self._column.addWidget(hint_label(hint))
@@ -179,9 +190,7 @@ class SettingRow(QWidget):
         from PySide6.QtCore import QSize
 
         hint = super().minimumSizeHint()
-        widest = max(
-            self._label.minimumSizeHint().width(), self.control.minimumSizeHint().width()
-        )
+        widest = max(self._label.minimumSizeHint().width(), self.control.minimumSizeHint().width())
         return QSize(min(hint.width(), widest), hint.height())
 
 

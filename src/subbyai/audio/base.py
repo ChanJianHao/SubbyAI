@@ -97,6 +97,14 @@ class AudioDevice:
     is_loopback: bool
     is_default: bool = False
 
+    @property
+    def source(self) -> str:
+        return "system" if self.is_loopback else "microphone"
+
+    @property
+    def capture_key(self) -> tuple:
+        return self.id, self.name, self.sample_rate, self.channels, self.is_loopback
+
 
 class AudioCapture(ABC):
     """A capture session bound to one device. Start/stop are idempotent."""
@@ -143,11 +151,15 @@ class DevicePoller:
         probe: Callable[[], str | None],
         callback: DeviceChangeCallback,
         interval: float = DEVICE_POLL_SECONDS,
+        *,
+        notify_initial: bool = False,
     ) -> None:
         self._probe = probe
         self._callback = callback
         self._interval = interval
         self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._notify_initial = notify_initial
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -159,6 +171,7 @@ class DevicePoller:
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         thread, self._thread = self._thread, None
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._interval + 1.0)
@@ -170,7 +183,16 @@ class DevicePoller:
 
     def _run(self) -> None:
         baseline = self._read()
-        while not self._stop.wait(self._interval):
+        if self._notify_initial and baseline is not None:
+            try:
+                self._callback()
+            except Exception:
+                log.exception("Initial device notification failed")
+        while True:
+            self._wake.wait(self._interval)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
             current = self._read()
             # None means "could not tell" — a transient enumeration failure must
             # not be mistaken for the user swapping hardware.
@@ -181,6 +203,9 @@ class DevicePoller:
                 self._callback()
             except Exception:  # a bad listener must not kill the poller
                 log.exception("Device change callback failed")
+
+    def refresh(self) -> None:
+        self._wake.set()
 
     def _read(self) -> str | None:
         try:
@@ -211,17 +236,32 @@ def resolve_device(
     preferred_id: str | None,
     preferred_name: str = "",
     strict: bool = False,
+    *,
+    source: str = "system",
 ) -> AudioDevice | None:
-    """Pick the configured device by stable name, with an optional device ID."""
+    """Resolve within the explicitly chosen source kind, including reconnects.
+
+    Device indices can change on reconnect. Match name and index together first,
+    then the remembered name. Never substitute a microphone for system sound.
+    """
+    devices = [d for d in devices if d.source == source]
     if not devices:
         if strict:
             raise AudioCaptureError(
-                "No audio outputs found",
-                "No playback device is available. Connect speakers or headphones and try again.",
+                "No devices for the selected source",
+                "No microphone is available. Connect one and check microphone permissions."
+                if source == "microphone"
+                else "No system-audio source is available. Connect speakers or headphones. "
+                "On macOS, system sound needs a loopback input such as BlackHole.",
             )
         return None
     if preferred_id:
         if preferred_name:
+            exact = next(
+                (d for d in devices if d.name == preferred_name and d.id == preferred_id), None
+            )
+            if exact is not None:
+                return exact
             named = next((d for d in devices if d.name == preferred_name), None)
             if named is not None:
                 return named
@@ -231,7 +271,7 @@ def resolve_device(
         if strict:
             raise AudioCaptureError(
                 "Selected device missing",
-                "Your selected audio output is disconnected. "
-                "Reconnect it or choose another output.",
+                "Your selected audio device is disconnected. "
+                "Reconnect it or choose another source.",
             )
     return next((d for d in devices if d.is_default), devices[0])

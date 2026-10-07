@@ -1,11 +1,12 @@
 """Everyday choices over the shared configuration; no technical prerequisites."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QComboBox, QLabel, QPushButton, QVBoxLayout
 
 from ..core.profiles import PROFILES, apply_profile
 from ..core.settings import OverlayPreset
 from ..languages import sorted_languages
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_widgets import Group, LanguagePicker, SettingsSection, hint_label
 from .widgets import compact_combo, preset_label
 
@@ -30,13 +31,21 @@ class EverydaySection(SettingsSection):
                 "Pick your sound, your language, and a look you love. Then press Start on Live."
             )
         )
-        listening = Group("What are we watching?")
+        listening = Group("What are we listening to?")
+        self.audio_source = compact_combo(QComboBox())
+        self.audio_source.addItem("System audio", "system")
+        self.audio_source.addItem("Microphone", "microphone")
+        listening.add_row(
+            "Audio source", self.audio_source,
+            "System audio for videos and calls; microphone for conversations and lectures.",
+        )
         self.device = compact_combo(QComboBox())
-        self.device.addItem("Follow my default output", None)
         lister = getattr(deps, "audio_devices", None)
-        self.devices = list(lister() if lister else [])
-        for device in self.devices:
-            self.device.addItem(device.name, device.id)
+        try:
+            self.devices = list(lister() if lister else [])
+        except Exception:
+            self.devices = []
+        self.refresh_devices(self.devices)
         listening.add_row("Listen to", self.device)
         self.source = LanguagePicker((("", "Auto detect"), *sorted_languages()))
         self.target = LanguagePicker((("", "Off · original words"), *sorted_languages()))
@@ -75,6 +84,7 @@ class EverydaySection(SettingsSection):
         privacy.add(self.privacy_note)
         root.addWidget(privacy)
         self.device.currentIndexChanged.connect(self._device_changed)
+        self.audio_source.activated.connect(self._source_changed)
         self.source.code_changed.connect(lambda code: self._language("source_language", code))
         self.target.code_changed.connect(lambda code: self._language("target_language", code))
         self.profile.activated.connect(self._profile_changed)
@@ -85,6 +95,7 @@ class EverydaySection(SettingsSection):
     def refresh(self):
         for control in (
             self.device,
+            self.audio_source,
             self.source,
             self.target,
             self.profile,
@@ -93,11 +104,31 @@ class EverydaySection(SettingsSection):
         ):
             control.blockSignals(True)
         self.device.setCurrentIndex(max(0, self.device.findData(self.settings.audio.device_id)))
+        self.audio_source.setCurrentIndex(
+            max(0, self.audio_source.findData(self.settings.audio.source))
+        )
         self.source.set_code(self.settings.captions.source_language)
         self.target.set_code(self.settings.captions.target_language)
         self.profile.setCurrentIndex(
             max(0, self.profile.findData(self.settings.captions.performance_profile))
         )
+        profile = self.settings.captions.performance_profile
+        from ..asr.capability import recommended_tier
+        from ..core.settings import QualityTier
+
+        description = (
+            PROFILES[profile][1] if profile in PROFILES else "Your advanced choices are active."
+        )
+        if self.capability is not None:
+            caps = self.capability
+            hardware = (
+                f"{caps.gpu_name or 'NVIDIA GPU'} · {caps.vram_gb:.0f} GB graphics memory"
+                if caps.has_cuda and caps.vram_gb
+                else f"Processor · {caps.cpu_cores} threads · {caps.ram_gb:.0f} GB memory"
+            )
+            suggested = "Fast" if recommended_tier(caps) is QualityTier.QUICK else "Balanced"
+            description += f"\n{hardware}. {suggested} is a good starting point."
+        self.recommendation.setText(description)
         self.preset.setCurrentIndex(
             max(0, self.preset.findData(self.settings.overlay.preset.value))
         )
@@ -112,6 +143,7 @@ class EverydaySection(SettingsSection):
         )
         for control in (
             self.device,
+            self.audio_source,
             self.source,
             self.target,
             self.profile,
@@ -124,11 +156,31 @@ class EverydaySection(SettingsSection):
         self.devices = list(devices)
         self.device.blockSignals(True)
         self.device.clear()
-        self.device.addItem("Follow my default output", None)
+        microphone = self.settings.audio.source == "microphone"
+        self.device.addItem(
+            "Default microphone" if microphone else "Default playback device", None
+        )
         for device in self.devices:
-            self.device.addItem(device.name, device.id)
+            if device.source == self.settings.audio.source:
+                self.device.addItem(device.name, device.id)
+        if (
+            self.settings.audio.device_id
+            and self.device.findData(self.settings.audio.device_id) < 0
+        ):
+            self.device.addItem(
+                "Disconnected · " + (self.settings.audio.device_name or "selected device"),
+                self.settings.audio.device_id,
+            )
         self.device.setCurrentIndex(max(0, self.device.findData(self.settings.audio.device_id)))
         self.device.blockSignals(False)
+
+    def _source_changed(self, index):
+        self.settings.audio.source = self.audio_source.itemData(index)
+        self.settings.audio.device_id = None
+        self.settings.audio.device_name = ""
+        self.refresh_devices(self.devices)
+        self.apply("audio")
+        self.restart_capture_requested.emit()
 
     def _device_changed(self, index):
         self.settings.audio.device_id = self.device.itemData(index)
@@ -150,7 +202,10 @@ class EverydaySection(SettingsSection):
             self.refresh()
 
     def _style_changed(self, index):
+        from .settings_captions import seed_from_preset
+
         self.settings.overlay.preset = OverlayPreset(self.preset.itemData(index))
+        seed_from_preset(self.settings.overlay, self.settings.overlay.preset)
         self.apply("overlay")
         self.style_changed.emit()
 

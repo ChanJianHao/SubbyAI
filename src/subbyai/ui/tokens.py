@@ -22,8 +22,10 @@ from ..core.settings import OverlayPreset
 SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32}
 RADIUS = {"sm": 8, "md": 12, "lg": 18, "xl": 24, "full": 16}
 
-# Motion, in milliseconds. Kept short: nothing in this app should feel animated.
-DURATION = {"fast": 120, "base": 180, "gentle": 250, "page": 280}
+# One motion language: crisp controls, soft arrivals, no delayed actions.
+DURATION = {"fast": 110, "base": 180, "gentle": 240, "page": 220, "feedback": 360}
+DURATION.update({"activity": 1200, "progress": 1400, "confirmation": 1800})
+MOTION_DISTANCE = {"page": 16, "arrival": 6}
 
 TYPE_SCALE = {
     "display": (26, 600),
@@ -224,6 +226,7 @@ class OverlayStyle:
     original_ratio: float  # original size relative to the translation line
     dim_original: float  # opacity of the original line
     animate: bool
+    border_width: float = 1.0
 
     # Typography and spacing. These were module constants in overlay_layout
     # until presets needed to disagree about them; defaults reproduce exactly
@@ -415,6 +418,11 @@ def overlay_style(preset: OverlayPreset, settings) -> OverlayStyle:
             base,
             background=parse_rgba(settings.custom_bg_color, base.background),
             text_color=hex_to_rgb(settings.custom_text_color),
+            translation_color=hex_to_rgb(settings.custom_translation_color),
+            border=parse_rgba(settings.custom_border_color, (255, 255, 255, 255))
+            if settings.custom_border_width > 0
+            else None,
+            border_width=settings.custom_border_width,
             radius=settings.custom_radius,
             outline=settings.custom_outline,
             shadow=settings.custom_shadow,

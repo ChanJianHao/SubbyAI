@@ -418,14 +418,14 @@ def _with_trailing_silence(audio: np.ndarray) -> np.ndarray:
 
 
 def _decode_threads() -> int:
-    """Physical cores, capped. Hyperthreads do not help a compute-bound decode."""
+    """Leave physical cores for playback and other apps; advanced overrides remain."""
     try:
         import psutil
 
         cores = psutil.cpu_count(logical=False) or 0
     except Exception:
         cores = 0
-    return max(1, min(8, cores)) if cores else 4
+    return max(1, min(8, (cores + 1) // 2)) if cores else 2
 
 
 def _friendly_load_error(exc: BaseException) -> str:

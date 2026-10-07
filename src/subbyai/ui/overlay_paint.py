@@ -54,8 +54,9 @@ def _paint_panel(painter: QPainter, style: OverlayStyle, panel: QRectF) -> None:
         painter.drawRoundedRect(panel, radius, radius)
     if style.border:
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(*style.border), 1))
-        painter.drawRoundedRect(panel.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        painter.setPen(QPen(QColor(*style.border), style.border_width))
+        inset = style.border_width / 2
+        painter.drawRoundedRect(panel.adjusted(inset, inset, -inset, -inset), radius, radius)
 
 
 def _paint_pair(

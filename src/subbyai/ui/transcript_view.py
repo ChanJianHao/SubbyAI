@@ -35,6 +35,7 @@ from .exports import (
     session_meta_line,
 )
 from .history_widgets import Hairline, confirm_delete
+from .motion import Expandable, confirm_action, reveal
 from .tokens import SPACE, Palette
 from .transcript_ask import AskAiDrawer, Assistant, ask_button_label
 from .transcript_model import SEGMENT_ROLE, SegmentDelegate, TranscriptModel, row_text
@@ -154,10 +155,11 @@ class TranscriptView(QWidget):
 
         self.drawer = AskAiDrawer(self, assistant)
         self.drawer.set_sources(self.transcript_text, self.selection_text)
-        self.drawer.close_requested.connect(self.drawer.hide)
+        self.drawer.close_requested.connect(lambda: self.drawer_panel.set_expanded(False))
         self.drawer.consent_granted.connect(self.cloud_consent_granted)
-        self.drawer.hide()
-        body.addWidget(self.drawer)
+        self.drawer_panel = Expandable(self.drawer, horizontal=True)
+        self.drawer_panel.set_expanded(False)
+        body.addWidget(self.drawer_panel)
         root.addLayout(body, 1)
         self._restyle(theme.current())
 
@@ -253,9 +255,10 @@ class TranscriptView(QWidget):
         clipboard = QApplication.clipboard()
         if clipboard is not None:
             clipboard.setText(text)
+            confirm_action(self.copy_button, "Copied ✓")
 
     def toggle_drawer(self) -> None:
-        self.drawer.setVisible(not self.drawer.isVisible())
+        self.drawer_panel.set_expanded(not self.drawer_panel.expanded)
 
     # ---------- rename ----------
 
@@ -281,12 +284,12 @@ class TranscriptView(QWidget):
     # ---------- find ----------
 
     def open_find(self) -> None:
-        self.find_bar.show()
+        reveal(self.find_bar, True)
         self.find_field.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.find_field.selectAll()
 
     def close_find(self) -> None:
-        self.find_bar.hide()
+        reveal(self.find_bar, False)
         self.find_field.clear()
         self._matches = []
         self._match_index = -1

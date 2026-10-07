@@ -3,8 +3,9 @@
 **Your world, subtitled.**
 
 Watch anime, K-dramas, films, games and streams in the language you choose. SubbyAI
-listens to your computer's audio and shows the original speech and its translation
-in a customizable desktop overlay.
+listens to system sound or an explicitly selected microphone and shows the original
+speech and its translation in a customizable desktop overlay. Use microphone mode
+for conversations, lectures, interviews and language practice.
 
 Local speech recognition and translation are the defaults. No account, subscription
 or API key is needed for local use. Download your models once, then watch offline.
@@ -20,13 +21,15 @@ or API key is needed for local use. Download your models once, then watch offlin
 
 1. Get the Windows installer or portable ZIP from [Releases](https://github.com/ChanJianHao/SubbyAI/releases).
 2. Open SubbyAI. Setup recommends a model for your computer and lets you test the audio meter.
-3. Choose your headphones or system output, the language you'll hear, and your subtitle language.
-4. Pick **Fast**, **Balanced**, or **Accurate** and preview a subtitle style.
+3. Choose **System audio** for playback or **Microphone** for conversations and lectures,
+   then choose the language you'll hear and your subtitle language.
+4. Pick **Fast**, **Balanced**, **Accurate**, or **Maximum Quality** and preview a subtitle style.
 5. Press **Start**. The first speech model download shows progress and can be cancelled.
    A missing translation pack downloads when that language pair is first needed.
 
-A quiet meter usually means the selected output isn't playing sound. Choose the device
-that your video uses. Set the input language explicitly when automatic detection struggles
+A quiet meter usually means the chosen source isn't producing sound. For playback, choose
+the device your video uses; for a microphone, check permission and mute controls.
+Set the input language explicitly when automatic detection struggles
 with short phrases or mixed-language media.
 
 ## Simple on the surface
@@ -34,6 +37,8 @@ with short phrases or mixed-language media.
 Everyday settings put your source, languages, performance and subtitle style together.
 **Balanced** is recommended for most viewing. Fast uses shorter phrases and a lighter model;
 Accurate gives difficult speech more context and takes longer.
+Maximum Quality uses the strongest model that fits the detected hardware and consumes more
+memory. Recommendations leave room for other apps; they don't promise a particular latency.
 
 ![Everyday settings](docs/images/settings-light.png)
 
@@ -45,8 +50,13 @@ preserves all your settings. Technical changes show as **Custom** until you choo
 
 - Original speech appears first; translation attaches to the same caption when ready.
 - Eight subtitle presets, including Cinema, Anime, Cute and High contrast, plus custom
-  fonts, colours, outline, shadow, panel opacity, alignment, width and line limits.
+  installed fonts, separate original/translation colours, borders, outline, shadow,
+  panel opacity, alignment, width and line limits. Save up to 20 personal looks.
 - A draggable, click-through overlay with display selection and remembered placement.
+- Switch between system sound and a microphone directly from Live. Each has its own
+  default device; a missing system source never causes microphone capture.
+- Larger app text, labelled keyboard controls, Unicode-aware subtitle wrapping and
+  an optional always-on-top overlay.
 - Friendly audio status, reconnect handling, cancellable model downloads and a tray menu.
 - Light, dark and system themes with Sakura or Ocean accents and **Mochi**, our original
   smiling subtitle companion. No heavy web UI or constantly running animations.
@@ -65,10 +75,13 @@ preserves all your settings. Technical changes show as **Custom** until you choo
 | GPU | Optional NVIDIA acceleration; CPU remains supported | CPU inference |
 | Storage | App plus roughly 78 MB–3.1 GB per speech model and language packs | Same |
 
-Audio selection covers the default output or a specific device. Per-application capture
-isn't implemented. Exclusive-fullscreen games can cover desktop overlays; use borderless
+Audio selection covers a default or named playback/input device. One source is captured
+at a time; combined microphone/playback and per-application capture aren't implemented.
+Exclusive-fullscreen games can cover desktop overlays; use borderless
 mode. Anti-cheat compatibility depends on the game. SubbyAI does not inject into games.
 macOS needs additional audio setup and has no global shortcuts yet.
+The V1 interface is in English. Speech, translation and subtitle rendering support
+non-English languages; coverage depends on the chosen model and installed language packs.
 
 ## Local and remote processing
 
@@ -92,7 +105,9 @@ context. Translation is configured separately from speech recognition. See
 - Downloading speech models contacts Hugging Face. Translation setup contacts the pinned
   Argos catalog on GitHub and the official language-pack host.
 - No telemetry, automatic crash uploads or user account.
-- Transcripts stay local when enabled; you choose retention and can delete them.
+- Saving is off by default. Choose original text, translated text, or session dates/languages
+  only. Session-only mode keeps text in memory, and you can clear Live when stopping.
+  Existing saved sessions remain until deleted or removed by your retention policy.
 - API keys go to the operating system's credential store, never settings JSON.
 - Provider badges classify the configured address. They aren't a guarantee about DNS,
   forwarding, the server's operator or its storage policy.

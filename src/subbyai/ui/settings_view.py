@@ -18,20 +18,20 @@ from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QScrollArea,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.settings import SettingsStore
 from . import theme
+from .motion import MotionStack
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_audio import AudioSection
 from .settings_captions import CaptionsSection
 from .settings_diagnostics import DiagnosticsSection
@@ -73,6 +73,7 @@ class SettingsDeps:
     """
 
     audio_devices: Callable[[], list] | None = None
+    refresh_audio_devices: Callable[[], None] | None = None
     model_manager: Any = None
     capability: Any = None
     hotkeys: Any = None
@@ -138,7 +139,7 @@ class SettingsView(QWidget):
         self.nav.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.nav.setWordWrap(False)
-        self.stack = QStackedWidget(self)
+        self.stack = MotionStack(self)
         self._keys: list[str] = []
         for key, label in SECTIONS:
             self.nav.addItem(label)
@@ -177,6 +178,10 @@ class SettingsView(QWidget):
         self._connect()
         self.refresh_theme()
         self._filter_nav()
+        theme.subscribe(self._theme_changed)
+
+    def _theme_changed(self, _palette) -> None:
+        self.refresh_theme()
 
     def _toggle_advanced(self, enabled: bool) -> None:
         self._store.settings.general.advanced_mode = enabled

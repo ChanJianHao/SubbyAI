@@ -323,9 +323,9 @@ def test_thickness_offers_only_weights_the_family_really_has(qt_app):
     for family in installed_caption_fonts():
         offered = weights_for(family)
         assert offered, f"{family} offers no weights at all"
-        styles = {s.lower() for s in QFontDatabase.styles(family)}
-        for label, _ in offered:
-            assert label.lower() in styles or label in ("Regular", "Bold")
+        weights = {QFontDatabase.weight(family, style) for style in QFontDatabase.styles(family)}
+        for label, value in offered:
+            assert value in weights or label in ("Regular", "Bold")
 
 
 def test_a_chosen_font_survives_into_the_caption(qt_app):

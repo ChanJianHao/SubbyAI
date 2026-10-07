@@ -8,7 +8,7 @@ import queue
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,15 +77,32 @@ class SessionStore:
     disk.
     """
 
-    def __init__(self, db_path: Path | None = None, flush_interval: float = _FLUSH_INTERVAL):
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        flush_interval: float = _FLUSH_INTERVAL,
+        *,
+        lazy: bool = False,
+        on_write_failure: Callable[[], None] | None = None,
+    ):
         self._path = db_path or paths.sessions_db()
         self._flush_interval = flush_interval
         self._queue: queue.Queue[object] = queue.Queue(maxsize=512)
         self.dropped_writes = 0
+        self._failure_pending = False
+        self._failure_lock = threading.Lock()
+        self._on_write_failure = on_write_failure
         self._writer: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.recovered_backup: Path | None = None
+        self._initialized = False
+        if not lazy or self._path.exists():
+            self._initialize()
+
+    def _initialize(self) -> None:
+        if self._initialized:
+            return
         try:
             self._init_schema()
         except sqlite3.DatabaseError as exc:
@@ -102,6 +119,7 @@ class SessionStore:
             self.recovered_backup = backup
             self._init_schema()
             log.warning("Damaged transcript storage preserved in a local recovery folder")
+        self._initialized = True
 
     # ---------- lifecycle ----------
 
@@ -168,6 +186,7 @@ class SessionStore:
     def create_session(
         self, title: str, source_language: str = "", target_language: str = ""
     ) -> int:
+        self._initialize()
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO sessions (title, started_at, source_language, target_language)"
@@ -176,28 +195,41 @@ class SessionStore:
             )
             return int(cursor.lastrowid)
 
-    def end_session(self, session_id: int) -> None:
-        self.flush()
+    def end_session(self, session_id: int, *, keep_empty: bool = False) -> None:
+        failure = None
+        try:
+            self.flush()
+        except HistoryWriteError as exc:
+            failure = exc
         with self._lock, self._connect() as conn:
             conn.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (time.time(), session_id))
             # Drop sessions that captured nothing rather than littering History.
-            conn.execute(
-                "DELETE FROM sessions WHERE id = ?"
-                " AND NOT EXISTS (SELECT 1 FROM segments WHERE session_id = ?)",
-                (session_id, session_id),
-            )
+            if not keep_empty:
+                conn.execute(
+                    "DELETE FROM sessions WHERE id = ?"
+                    " AND NOT EXISTS (SELECT 1 FROM segments WHERE session_id = ?)",
+                    (session_id, session_id),
+                )
+        if failure is not None:
+            raise failure
 
     def rename_session(self, session_id: int, title: str) -> None:
+        if not self._initialized:
+            return
         with self._lock, self._connect() as conn:
             conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
 
     def delete_session(self, session_id: int) -> None:
+        if not self._initialized:
+            return
         self.flush()
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM segments WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
     def delete_all(self) -> None:
+        if not self._initialized:
+            return
         self.flush()
         with self._lock, self._connect() as conn:
             conn.execute("DELETE FROM segments")
@@ -205,11 +237,17 @@ class SessionStore:
             conn.execute("INSERT INTO segments_fts(segments_fts) VALUES('rebuild')")
 
     def list_sessions(self, limit: int = 200) -> list[SessionInfo]:
+        if not self._initialized:
+            return []
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT s.*, COUNT(g.id) AS segment_count,
-                       COALESCE(SUM(LENGTH(g.text) - LENGTH(REPLACE(g.text, ' ', '')) + 1), 0)
+                       COALESCE(SUM(CASE WHEN LENGTH(TRIM(g.text)) > 0
+                           THEN LENGTH(TRIM(g.text)) - LENGTH(REPLACE(TRIM(g.text), ' ', '')) + 1
+                           WHEN LENGTH(TRIM(g.translation)) > 0 THEN LENGTH(TRIM(g.translation))
+                               - LENGTH(REPLACE(TRIM(g.translation), ' ', '')) + 1
+                           ELSE 0 END), 0)
                            AS word_count
                 FROM sessions s LEFT JOIN segments g ON g.session_id = s.id
                 GROUP BY s.id ORDER BY s.started_at DESC LIMIT ?
@@ -219,11 +257,17 @@ class SessionStore:
         return [_session_from_row(row) for row in rows]
 
     def get_session(self, session_id: int) -> SessionInfo | None:
+        if not self._initialized:
+            return None
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT s.*, COUNT(g.id) AS segment_count,
-                       COALESCE(SUM(LENGTH(g.text) - LENGTH(REPLACE(g.text, ' ', '')) + 1), 0)
+                       COALESCE(SUM(CASE WHEN LENGTH(TRIM(g.text)) > 0
+                           THEN LENGTH(TRIM(g.text)) - LENGTH(REPLACE(TRIM(g.text), ' ', '')) + 1
+                           WHEN LENGTH(TRIM(g.translation)) > 0 THEN LENGTH(TRIM(g.translation))
+                               - LENGTH(REPLACE(TRIM(g.translation), ' ', '')) + 1
+                           ELSE 0 END), 0)
                            AS word_count
                 FROM sessions s LEFT JOIN segments g ON g.session_id = s.id
                 WHERE s.id = ? GROUP BY s.id
@@ -239,15 +283,15 @@ class SessionStore:
         try:
             self._queue.put_nowait((session_id, segment))
         except queue.Full:
-            self.dropped_writes += 1
-            if self.dropped_writes == 1:
-                log.warning("History storage is falling behind; some captions were not saved")
+            self._report_loss(1)
 
     def update_segment(self, session_id: int, segment: CaptionSegment) -> None:
         """Upsert by session and event id, including updates ahead of a batch flush."""
         self.add_segment(session_id, segment)
 
     def segments(self, session_id: int) -> list[CaptionSegment]:
+        if not self._initialized:
+            return []
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM segments WHERE session_id = ? ORDER BY id", (session_id,)
@@ -255,6 +299,8 @@ class SessionStore:
         return [_segment_from_row(row) for row in rows]
 
     def search(self, query: str, limit: int = 200) -> list[SearchHit]:
+        if not self._initialized:
+            return []
         query = query.strip()
         if not query:
             return []
@@ -273,8 +319,8 @@ class SessionStore:
                     """,
                     (match, limit),
                 ).fetchall()
-            except sqlite3.OperationalError as exc:
-                log.debug("Search query rejected (%s); falling back to LIKE", exc)
+            except sqlite3.OperationalError:
+                log.debug("Search query rejected; falling back to LIKE")
                 like = f"%{query}%"
                 rows = conn.execute(
                     """
@@ -306,16 +352,17 @@ class SessionStore:
         except OSError:
             return 0
 
-    def apply_retention(self, retention_days: int) -> int:
+    def apply_retention(self, retention_days: int, *, active_session: int | None = None) -> int:
         """Delete sessions older than the policy. Returns how many went."""
-        if retention_days <= 0:  # forever, or session-only (handled at end_session)
+        if not self._initialized or retention_days <= 0:
             return 0
         cutoff = time.time() - retention_days * 86400
         with self._lock, self._connect() as conn:
             old = [
                 r["id"]
                 for r in conn.execute(
-                    "SELECT id FROM sessions WHERE started_at < ?", (cutoff,)
+                    "SELECT id FROM sessions WHERE started_at < ? AND id != ?",
+                    (cutoff, active_session or -1),
                 ).fetchall()
             ]
             if old:
@@ -334,8 +381,12 @@ class SessionStore:
                 raise TimeoutError("History storage is busy. Try again shortly.") from exc
             if not barrier.done.wait(max(0, deadline - time.monotonic())):
                 raise TimeoutError("History storage hasn't finished writing. Try again shortly.")
+            if barrier.failed:
+                raise HistoryWriteError()
         else:
             self._drain_once()
+            if self._take_failure():
+                raise HistoryWriteError()
 
     # ---------- writer ----------
 
@@ -356,6 +407,7 @@ class SessionStore:
                 self._commit(pending)
                 pending = []
                 last_commit = time.monotonic()
+                item.failed = self._take_failure()
                 item.done.set()
                 continue
             if item is not _TICK:
@@ -407,17 +459,43 @@ class SessionStore:
                     "translation=excluded.translation",
                     rows,
                 )
-        except sqlite3.Error:
-            log.exception("Could not write %d caption(s) to history", len(rows))
+        except (sqlite3.Error, OSError):
+            self._report_loss(len(rows))
+
+    def _report_loss(self, count: int) -> None:
+        with self._failure_lock:
+            self.dropped_writes += count
+            notify = not self._failure_pending
+            self._failure_pending = True
+        log.warning("History storage could not save %d write(s)", count)
+        if notify and self._on_write_failure is not None:
+            try:
+                self._on_write_failure()
+            except Exception:
+                log.warning("Could not deliver the history storage warning")
+
+    def _take_failure(self) -> bool:
+        with self._failure_lock:
+            failed = self._failure_pending
+            self._failure_pending = False
+            return failed
+
+
+class HistoryWriteError(OSError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Some captions could not be saved. Check disk space and folder permissions."
+        )
 
 
 class _FlushBarrier:
     """Marker that makes the writer commit everything queued before it."""
 
-    __slots__ = ("done",)
+    __slots__ = ("done", "failed")
 
     def __init__(self) -> None:
         self.done = threading.Event()
+        self.failed = False
 
 
 _TICK: object = object()  # "no item arrived", distinct from shutdown

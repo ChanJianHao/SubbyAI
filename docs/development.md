@@ -26,6 +26,8 @@ fonts, which are not bundled assets.
 | Script | Purpose |
 |---|---|
 | `capture_ui.py` | Render actual widgets with fictional captions and no audio |
+| `smoke_ui.py` | Exercise navigation, switches, notices, progress and reduced motion |
+| `smoke_windows_launch.py` | Launch/close the frozen app with an isolated Unicode profile |
 | `make_icon.py` | Generate original Qt artwork and application icons |
 | `e2e_smoke.py --translate fr` | Exercise Windows loopback, recognition and local translation |
 | `audit_privacy.py --history` | Inspect source, reachable history and optional binary payloads |
@@ -40,6 +42,16 @@ Real audio checks can download models and play a public sentence through your ou
 Run them without private calls or confidential media playing. They use local inference.
 
 ## Engineering contracts
+
+UI motion lives in `ui.motion` and `ui.motion_widgets`; use their interruptible
+tweens, page stack, reveal helpers and painted controls. Timings and distances
+come from theme tokens. Actions and accessible values update immediately;
+animations only follow their visual state. Hidden surfaces stop their animation
+clocks, and page snapshots are released on completion, hiding or resizing.
+Windows' Animation effects preference and General → Reduce motion settle active
+transitions. Check native rendering with `QT_QPA_PLATFORM=windows` and repeat
+`smoke_ui.py` at `QT_SCALE_FACTOR=1`, `1.5` and `2`. Screenshots and timing results
+are written to ignored build output with fictional content and temporary data.
 
 - Keep heavy work off the GUI and audio callback. Stop returns promptly; completion comes later.
 - Emit original captions without waiting for translation; update them by stable event ID.

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from . import APP_NAME, branding, paths
 from .asr.engine import EngineError, default_cache
 from .asr.models import DownloadProgress, ModelManager
-from .audio.base import AudioCaptureError, AudioDevice, create_capture, resolve_device
+from .audio.base import AudioCaptureError, AudioDevice, DevicePoller, create_capture, resolve_device
 from .core import logging_setup, secrets
 from .core.events import CaptionSegment
 from .core.health import HealthReport, HealthState
@@ -40,7 +40,6 @@ from .core.settings import (
 )
 from .pipeline import Captioner
 from .storage import SessionStore
-from .system.foreground import foreground_app_name
 from .system.hotkeys import HotkeyManager
 from .system.single_instance import SingleInstance
 from .translation.chain import TranslationChain
@@ -66,8 +65,10 @@ class Controller(QObject):
     # to fire on.
     download_finished = Signal()
     shutdown_ready = Signal()
-    devices_changed = Signal()
+    devices_changed = Signal(object)
     capability_ready = Signal(object)
+    history_storage_failed = Signal()
+    retention_finished = Signal(int, bool)
 
     def __init__(self, app: QApplication, store: SettingsStore):
         super().__init__()
@@ -75,7 +76,7 @@ class Controller(QObject):
         self.store = store
         self.settings: Settings = store.settings
 
-        self.sessions = SessionStore()
+        self.sessions = SessionStore(lazy=True, on_write_failure=self.history_storage_failed.emit)
         self.sessions.start_writer()
         self.models = ModelManager()
         self.engines = default_cache()
@@ -91,16 +92,34 @@ class Controller(QObject):
         self.hotkeys = HotkeyManager(self)
 
         self._session_id: int | None = None
+        from .storage.policy import HistoryPolicy
+
+        self._history_policy = HistoryPolicy()
         self._download_thread: threading.Thread | None = None
         self._download_cancel = threading.Event()
         self._segment_count = 0
         self._word_count = 0
         self._devices: list[AudioDevice] = []
+        self._discovered_devices: list[AudioDevice] = []
+        self._devices_ready = False
+        self._pending_start = False
+        self._pending_onboarding = False
         self._quitting = False
         self._pending_restart = False
         self._download_requested = False
         self._watcher = None
         self._capability = None
+        self._capture_device: AudioDevice | None = None
+        self._model_timer = QTimer(self)
+        self._model_timer.setSingleShot(True)
+        self._model_timer.timeout.connect(self._release_idle_models)
+        self._model_lifecycle_lock = threading.Lock()
+        self._retention_lock = threading.Lock()
+        self._retention_thread: threading.Thread | None = None
+        self._retention_timer = QTimer(self)
+        self._retention_timer.setInterval(60 * 60 * 1000)
+        self._retention_timer.timeout.connect(self._apply_retention)
+        self._retention_timer.start()
 
         self._build_surfaces()
         self._connect()
@@ -118,6 +137,7 @@ class Controller(QObject):
             self.store,
             SettingsDeps(
                 audio_devices=self._list_devices,
+                refresh_audio_devices=self._refresh_devices,
                 model_manager=self.models,
                 # Left unset on purpose: the ASR layer detects and caches on first
                 # use, so opening Settings costs the probe, not every cold start.
@@ -136,9 +156,9 @@ class Controller(QObject):
         )
         # History pushes to the transcript viewer in place, so the shell keeps
         # exactly three destinations.
-        from PySide6.QtWidgets import QStackedWidget
+        from .ui.motion import MotionStack
 
-        self._history_stack = QStackedWidget()
+        self._history_stack = MotionStack()
         self._history_stack.addWidget(self.history)
         self._history_stack.addWidget(self.transcript)
 
@@ -158,6 +178,7 @@ class Controller(QObject):
         captioner.device_opened.connect(lambda _name: log.info("Audio capture opened"))
 
         self.live.start_requested.connect(self.start_captions)
+        self.live.source_changed.connect(self._on_audio_source)
         self.live.stop_requested.connect(self.stop_captions)
         self.live.translation_toggled.connect(self._on_translation_toggled)
         self.live.show_original_toggled.connect(self._on_show_original)
@@ -177,7 +198,6 @@ class Controller(QObject):
         self.transcript.back_requested.connect(lambda: self._history_stack.setCurrentIndex(0))
 
         self.settings_view.restart_capture_requested.connect(self._restart_capture)
-        self.settings_view.style_changed.connect(self._apply_overlay_settings)
         self.settings_view.preview_requested.connect(self.overlay.show_placement_preview)
         self.settings_view.shortcuts_changed.connect(self._register_hotkeys)
         self.settings_view.check_updates_requested.connect(self._check_updates)
@@ -207,6 +227,8 @@ class Controller(QObject):
         self.shutdown_ready.connect(self._finish_quit)
         self.devices_changed.connect(self._on_devices_changed)
         self.capability_ready.connect(self._on_capability_ready)
+        self.history_storage_failed.connect(self._on_history_storage_failed)
+        self.retention_finished.connect(self._on_retention_finished)
         self.live.cancel_download_requested.connect(self.cancel_download)
 
         self._level_timer = QTimer(self)
@@ -217,14 +239,24 @@ class Controller(QObject):
     # ---------- lifecycle ----------
 
     def start(self) -> None:
-        theme.apply(self.app, self.settings.general.theme, self.settings.general.accent)
+        theme.apply(
+            self.app,
+            self.settings.general.theme,
+            self.settings.general.accent,
+            self.settings.general.text_scale,
+            reduce_motion=self.settings.general.reduce_motion,
+        )
         self.tray.show()
         self.tray.set_preset(self.settings.overlay.preset)
         # Show first: _register_hotkeys warns via a banner when the shell is
         # visible, and registering before the show swallowed the warning.
         self.shell.show()
-        self._watcher = create_capture()
-        self._watcher.watch_devices(self.devices_changed.emit)
+        self._watcher = DevicePoller(
+            self._probe_devices,
+            lambda: self.devices_changed.emit(list(self._discovered_devices)),
+            notify_initial=True,
+        )
+        self._watcher.start()
         from .asr.capability import detect
 
         def probe():
@@ -241,6 +273,8 @@ class Controller(QObject):
         self._quitting = True
         self._pending_restart = False
         self._level_timer.stop()
+        self._model_timer.stop()
+        self._retention_timer.stop()
         self.cancel_download()
         self._download_cancel.set()
         self.captioner.stop()
@@ -255,19 +289,25 @@ class Controller(QObject):
 
             shutdown_downloads()
             if self._watcher is not None:
-                self._watcher.unwatch()
+                self._watcher.stop()
             while not self.captioner.wait(timeout=1):
                 pass
             if self._download_thread is not None:
                 self._download_thread.join()
+            if self._retention_thread is not None:
+                self._retention_thread.join()
             try:
                 if self._session_id is not None:
-                    self.sessions.end_session(self._session_id)
+                    self.sessions.end_session(
+                        self._session_id, keep_empty=self._history_policy.metadata_only
+                    )
                     self._session_id = None
             except (OSError, TimeoutError, sqlite3.Error):
                 log.exception("Could not finish transcript storage during shutdown")
             finally:
                 self.sessions.close()
+            with self._model_lifecycle_lock:
+                self.engines.evict_all()
             from PySide6.QtCore import QThreadPool
 
             QThreadPool.globalInstance().waitForDone()
@@ -295,40 +335,41 @@ class Controller(QObject):
     def start_captions(self) -> None:
         if self.captioner.is_active or self._quitting:
             return
-        model = self.settings.model_name
-        if self.settings.processing.asr_backend == "local" and not self.models.is_downloaded(model):
-            self._start_download(model)
-            return
         self._begin_session()
 
     def stop_captions(self) -> None:
         self._pending_restart = False
+        self._recover_device = False
+        self._pending_start = False
         self.cancel_download()
         self.captioner.stop()
 
     def _begin_session(self) -> None:
-        # The gate lives here, not only in start_captions: the restart path
-        # (_restart_capture -> stop -> _on_stopped -> _begin_session) comes
-        # straight back in, so changing quality mid-session — or starting after
-        # a model was removed — would otherwise reach _provide_engine and try
-        # to fetch gigabytes on the pipeline worker.
-        model = self.settings.model_name
+        self._model_timer.stop()
         if self._quitting:
             return
-        if self.settings.processing.asr_backend == "local" and not self.models.is_downloaded(model):
-            self._start_download(model)
+        if not self._devices_ready:
+            self._pending_start = True
+            self._on_status("Finding your audio sources…")
             return
-        config = SessionConfig.from_settings(self.settings)
         try:
             device = resolve_device(
                 self._list_devices(),
                 self.settings.audio.device_id,
                 self.settings.audio.device_name,
                 strict=True,
+                source=self.settings.audio.source,
             )
         except AudioCaptureError as exc:
             self._on_error(exc.message)
             return
+        # Start and automatic restarts share one gate. Validate the source before
+        # a large download, and keep network work out of the inference worker.
+        model = self.settings.model_name
+        if self.settings.processing.asr_backend == "local" and not self.models.is_downloaded(model):
+            self._start_download(model)
+            return
+        config = SessionConfig.from_settings(self.settings)
         self.live.clear_segments()
         self.overlay.clear()
         self._segment_count = 0
@@ -336,12 +377,8 @@ class Controller(QObject):
 
         if not self.captioner.start(config, device):
             return
-        if self.settings.history.enabled and self.settings.history.retention_days != -1:
-            self._session_id = self.sessions.create_session(
-                _session_title(),
-                config.source_language,
-                config.target_language,
-            )
+        self._capture_device = device
+        self._start_history()
         self.live.set_running(True)
         if self.settings.overlay.visible and not self.settings.overlay.auto_hide:
             self.overlay.show()
@@ -426,7 +463,9 @@ class Controller(QObject):
         self._word_count += len(segment.text.split())
         self._update_ticker(segment)
         if self._session_id is not None and self.settings.history.enabled:
-            self.sessions.add_segment(self._session_id, segment)
+            stored = self._history_policy.for_storage(segment)
+            if stored is not None:
+                self.sessions.add_segment(self._session_id, stored)
 
     def _on_segment_updated(self, segment: CaptionSegment) -> None:
         if self._quitting:
@@ -434,7 +473,9 @@ class Controller(QObject):
         self.overlay.update_segment(segment)
         self.live.update_segment(segment)
         if self._session_id is not None and self.settings.history.enabled:
-            self.sessions.update_segment(self._session_id, segment)
+            stored = self._history_policy.for_storage(segment)
+            if stored is not None:
+                self.sessions.update_segment(self._session_id, stored)
 
     def _on_health(self, report: HealthReport) -> None:
         self.live.set_health(report)
@@ -458,6 +499,20 @@ class Controller(QObject):
     def _on_status(self, message: str) -> None:
         self.live.banner.show_message(message, "info")
 
+    def _on_history_storage_failed(self) -> None:
+        if self._quitting:
+            return
+        message = (
+            "Live captions still work, but some history couldn't be saved. "
+            "Check free disk space and folder permissions, then start a new session."
+        )
+        already_warned = not self.live.history_warning.isHidden()
+        self.live.history_warning.show_message(
+            message, "warning", "Storage settings", "manage_storage"
+        )
+        if not already_warned and not self.shell.isVisible():
+            self.tray.notify(APP_NAME, message)
+
     def _on_error(self, message: str) -> None:
         self.live.set_running(False)
         self.live.banner.show_message(message, "error", "Open settings", "open_settings")
@@ -472,9 +527,13 @@ class Controller(QObject):
         self.overlay.hide()
         if not self._quitting:
             self._end_session()
+        if self.settings.history.clear_live_on_stop or self.settings.history.retention_days == -1:
+            self.live.clear_segments()
         if self._pending_restart and not self._quitting:
             self._pending_restart = False
             QTimer.singleShot(100, self._begin_session)
+        elif not self._quitting:
+            self._model_timer.start(self.settings.captions.keep_warm_minutes * 60000)
 
     def _on_pipeline_phase(self, phase) -> None:
         busy = phase.value in ("stopping", "failed") and self.captioner.has_workers
@@ -487,16 +546,36 @@ class Controller(QObject):
             session_id = self._session_id
             self._session_id = None
             try:
-                self.sessions.end_session(session_id)
+                self.sessions.end_session(session_id, keep_empty=self._history_policy.metadata_only)
             except (OSError, TimeoutError, sqlite3.Error):
                 log.exception("Could not finish transcript storage")
-                self.live.banner.show_message(
+                self.live.history_warning.show_message(
                     "Your captions stopped, but transcript storage couldn't finish. "
                     "Check free disk space and try again.",
                     "warning",
                 )
                 return
             self.history.refresh()
+
+    def _start_history(self) -> None:
+        from .storage.policy import HistoryPolicy
+
+        self._history_policy = HistoryPolicy.from_settings(self.settings.history)
+        self.live.history_warning.hide()
+        if not self._history_policy.enabled:
+            return
+        try:
+            self._session_id = self.sessions.create_session(
+                "Session — " + datetime.now().strftime("%H:%M"),
+                self.settings.captions.source_language,
+                self.settings.captions.target_language,
+            )
+        except (OSError, sqlite3.Error):
+            self.live.history_warning.show_message(
+                "Captions can run, but history couldn't be opened. "
+                "Check free disk space and folder permissions.",
+                "warning",
+            )
 
     # ---------- providers ----------
 
@@ -509,12 +588,13 @@ class Controller(QObject):
                 processing,
                 secrets.get_key(secrets.endpoint_key_id("remote-asr", processing.base_url)),
             )
-        engine = self.engines.get(
-            config.model_name, config.compute_device, config.compute_type, config.cpu_threads
-        )
-        engine.beam_size = config.beam_size
-        engine.load()
-        return engine
+        with self._model_lifecycle_lock:
+            engine = self.engines.get(
+                config.model_name, config.compute_device, config.compute_type, config.cpu_threads
+            )
+            engine.beam_size = config.beam_size
+            engine.load()
+            return engine
 
     def release_models(self) -> None:
         """Unload the cached model so its files can be deleted.
@@ -526,7 +606,21 @@ class Controller(QObject):
         """
         if getattr(self.captioner, "has_workers", self.captioner.is_active):
             raise RuntimeError("Stop captions before removing a model.")
-        self.engines.evict_all()
+        with self._model_lifecycle_lock:
+            self.engines.evict_all()
+
+    def _release_idle_models(self) -> None:
+        # Enqueue on the same Qt thread as Start, then let the engine cache lock
+        # serialize eviction with any subsequent worker loading another model.
+        if self.captioner.has_workers or self._pending_restart or self._quitting:
+            return
+
+        def release() -> None:
+            with self._model_lifecycle_lock:
+                if not self.captioner.has_workers and not self._pending_restart:
+                    self.engines.evict_all()
+
+        threading.Thread(target=release, name="subbyai-model-release", daemon=True).start()
 
     def _provide_translator(self, config: SessionConfig):
         """Assemble endpoint-consented translators for this immutable session."""
@@ -542,18 +636,39 @@ class Controller(QObject):
 
     # ---------- settings reactions ----------
 
+    def _on_audio_source(self, source: str) -> None:
+        if source not in ("system", "microphone"):
+            return
+        self.settings.audio.source = source
+        self.settings.audio.device_id = None
+        self.settings.audio.device_name = ""
+        self.store.notify("audio")
+        self._restart_capture()
+
     def _on_settings_changed(self, section: str) -> None:
         if section == "overlay":
             self._apply_overlay_settings()
         elif section == "general":
-            theme.apply(self.app, self.settings.general.theme, self.settings.general.accent)
+            theme.apply(
+                self.app,
+                self.settings.general.theme,
+                self.settings.general.accent,
+                self.settings.general.text_scale,
+                reduce_motion=self.settings.general.reduce_motion,
+            )
             self.settings_view.refresh_theme()
         elif section in ("captions", "audio", "intelligence", "processing"):
             self.live.sync_from_settings()
             self.settings_view.everyday.refresh()
+            if section == "audio":
+                self.settings_view.everyday.refresh_devices(self._devices)
+                self.settings_view.audio.refresh()
+            elif section == "captions" and self._model_timer.isActive():
+                self._model_timer.start(self.settings.captions.keep_warm_minutes * 60000)
         elif section == "history":
-            if not self.settings.history.enabled:
-                self._end_session()
+            self._end_session()
+            if self.captioner.is_active:
+                self._start_history()
             self._apply_retention()
 
     def _apply_overlay_settings(self) -> None:
@@ -645,6 +760,7 @@ class Controller(QObject):
         return {
             "phase": self.captioner.phase.value,
             "processing": self.settings.processing.asr_backend,
+            "audio_source": self.settings.audio.source,
             "pipeline": asdict(self.captioner.metrics),
             "history_pending": self.sessions.pending_count,
             "history_dropped": self.sessions.dropped_writes,
@@ -656,50 +772,74 @@ class Controller(QObject):
         self._capability = caps
         everyday = self.settings_view.everyday
         everyday.capability = caps
-        everyday.recommendation.setText(
-            "Your graphics card can help with fast local subtitles. Balanced is a good start."
-            if caps.has_cuda
-            else "Local subtitles use your processor. "
-            "Fast is a good choice on a lightweight laptop."
-        )
+        everyday.refresh()
         self.settings_view.intelligence.quality._capability = caps
         self.settings_view.intelligence.quality.refresh_states()
 
-    def _on_devices_changed(self) -> None:
+    def _on_devices_changed(self, devices: list[AudioDevice] | None = None) -> None:
         if self._quitting:
             return
-        devices = self._list_devices()
+        devices = list(devices if devices is not None else self._devices)
+        self._devices = devices
+        self._devices_ready = True
+        self.settings_view.audio.refresh()
+        self.settings_view.everyday.refresh_devices(devices)
+        if self._pending_onboarding:
+            self._pending_onboarding = False
+            QTimer.singleShot(0, self.run_onboarding)
+        if self._pending_start:
+            self._pending_start = False
+            self.start_captions()
         try:
             selected = resolve_device(
-                devices, self.settings.audio.device_id, self.settings.audio.device_name, strict=True
+                devices,
+                self.settings.audio.device_id,
+                self.settings.audio.device_name,
+                strict=True,
+                source=self.settings.audio.source,
             )
         except AudioCaptureError:
             if self.captioner.is_active:
                 self._recover_device = True
                 self.captioner.stop()
                 self._on_status(
-                    "Your audio output disconnected. Reconnect it or choose another source."
+                    "Your audio device disconnected. Reconnect it or choose another source."
                 )
             return
         if selected is not None:
+            if self.settings.audio.device_id and selected.id != self.settings.audio.device_id:
+                self.settings.audio.device_id = selected.id
+                self.store.notify("audio")
             if self.captioner.is_active:
-                self._restart_capture()
+                if (
+                    self._capture_device is None
+                    or selected.capture_key != self._capture_device.capture_key
+                ):
+                    self._restart_capture()
             elif getattr(self, "_recover_device", False):
                 self._recover_device = False
                 if self.captioner.has_workers:
                     self._pending_restart = True
                 else:
                     self.start_captions()
-        self.settings_view.audio.refresh()
-        self.settings_view.everyday.refresh_devices(devices)
 
     def _list_devices(self) -> list[AudioDevice]:
+        return list(self._devices)
+
+    def _refresh_devices(self) -> None:
+        if self._watcher is not None:
+            self._watcher.refresh()
+
+    def _probe_devices(self) -> str:
         try:
-            self._devices = create_capture().list_devices()
+            self._discovered_devices = create_capture().list_devices()
         except AudioCaptureError as exc:
             log.warning("Could not list audio devices: %s", exc)
-            self._devices = []
-        return self._devices
+            if not self._devices_ready:
+                self._discovered_devices = []
+                return "initial enumeration unavailable"
+            raise
+        return repr(self._discovered_devices)
 
     def _tick_level(self) -> None:
         report = self.captioner.health
@@ -774,6 +914,8 @@ class Controller(QObject):
             self._open_settings("shortcuts")
         elif key == "open_settings":
             self._open_settings("intelligence")
+        elif key == "manage_storage":
+            self._open_settings("general")
         elif key == "retry_download":
             self.start_captions()
 
@@ -788,12 +930,44 @@ class Controller(QObject):
 
     def _apply_retention(self) -> None:
         days = self.settings.history.retention_days
-        if days > 0:
-            removed = self.sessions.apply_retention(days)
-            if removed:
-                log.info("Removed %d transcript(s) older than %d days", removed, days)
+        if days <= 0 or self._quitting or not self._retention_lock.acquire(blocking=False):
+            return
+        active_session = self._session_id
+
+        def prune() -> None:
+            removed, failed = 0, False
+            try:
+                removed = self.sessions.apply_retention(days, active_session=active_session)
+                if removed:
+                    log.info("Removed %d expired transcript(s)", removed)
+            except (OSError, sqlite3.Error):
+                failed = True
+                log.warning("History retention could not complete")
+            finally:
+                self._retention_lock.release()
+                self.retention_finished.emit(removed, failed)
+
+        self._retention_thread = threading.Thread(
+            target=prune, name="subbyai-retention", daemon=True
+        )
+        self._retention_thread.start()
+
+    def _on_retention_finished(self, removed: int, failed: bool) -> None:
+        if self._quitting:
+            return
+        if failed:
+            self.live.history_warning.show_message(
+                "Older history couldn't be removed. Check free disk space and folder permissions.",
+                "warning", "Storage settings", "manage_storage",
+            )
+        elif removed:
+            self.history.refresh()
 
     def run_onboarding(self) -> None:
+        if not self._devices_ready:
+            self._pending_onboarding = True
+            self._on_status("Finding your audio sources before setup…")
+            return
         from .ui.onboarding import OnboardingWizard
 
         wizard = OnboardingWizard(self.settings, devices=self._list_devices())
@@ -810,13 +984,6 @@ class Controller(QObject):
             QTimer.singleShot(200, self.start_captions)
 
 
-def _session_title() -> str:
-    """Name a session after whatever the user was watching."""
-    app_name = foreground_app_name()
-    stamp = datetime.now().strftime("%H:%M")
-    return f"{app_name} — {stamp}" if app_name else f"Session — {stamp}"
-
-
 def _tier_label(settings: Settings) -> str:
     if settings.captions.model_override:
         return "Custom"
@@ -829,8 +996,9 @@ def run(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
     log_file = logging_setup.setup(verbose="--verbose" in argv)
     startup_help = (
-        f"See {log_file}." if log_file else
-        "Check free disk space and access to your application data folder."
+        f"See {log_file}."
+        if log_file
+        else "Check free disk space and access to your application data folder."
     )
 
     app = QApplication(argv)
@@ -861,7 +1029,10 @@ def run(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, APP_NAME, str(exc))
         instance.release()
         return 1
-    theme.apply(app, store.settings.general.theme, store.settings.general.accent)
+    theme.apply(
+        app, store.settings.general.theme, store.settings.general.accent,
+        store.settings.general.text_scale, reduce_motion=store.settings.general.reduce_motion,
+    )
     app.setWindowIcon(theme.app_icon())
     log.info("%s %s starting (log: %s)", APP_NAME, branding.VERSION, log_file)
 
@@ -885,9 +1056,10 @@ def run(argv: list[str] | None = None) -> int:
 
     if controller.sessions.recovered_backup is not None:
         QMessageBox.warning(
-            controller.shell, APP_NAME,
+            controller.shell,
+            APP_NAME,
             "Your transcript database was damaged. SubbyAI preserved it for recovery at:\n"
-            f"{controller.sessions.recovered_backup}\n\nA new empty history is ready to use."
+            f"{controller.sessions.recovered_backup}\n\nA new empty history is ready to use.",
         )
     if not store.settings.general.onboarding_complete:
         controller.run_onboarding()

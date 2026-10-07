@@ -2,7 +2,6 @@
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QLineEdit,
@@ -13,6 +12,8 @@ from PySide6.QtWidgets import (
 
 from ..core.network import validate_endpoint
 from ..core.secrets import endpoint_key_id
+from .motion import confirm_action
+from .motion_widgets import MotionToggle as QCheckBox
 from .settings_widgets import Group, SettingsSection, hint_label
 from .widgets import compact_combo
 
@@ -56,6 +57,19 @@ class EngineSection(SettingsSection):
             self.controls[name] = control
             inference.add_row(label, control)
         root.addWidget(inference)
+        resources = Group("Room for your other apps")
+        self.keep_warm = QSpinBox()
+        self.keep_warm.setRange(0, 30)
+        self.keep_warm.setValue(self.settings.captions.keep_warm_minutes)
+        self.keep_warm.valueChanged.connect(self._warm_changed)
+        resources.add_row(
+            "Keep the speech model warm (minutes)",
+            self.keep_warm,
+            "After captions stop, release the model's RAM and graphics memory when this "
+            "time expires. Zero releases it immediately. Automatic CPU threads leave "
+            "about half your physical cores for playback and other apps.",
+        )
+        root.addWidget(resources)
         root.addWidget(
             hint_label(
                 "Changes reconnect a running session. A slower engine drops old phrases "
@@ -69,7 +83,14 @@ class EngineSection(SettingsSection):
         self.apply("captions")
         self.restart_capture_requested.emit()
 
+    def _warm_changed(self, value):
+        self.settings.captions.keep_warm_minutes = value
+        self.apply("captions")
+
     def refresh(self):
+        self.keep_warm.blockSignals(True)
+        self.keep_warm.setValue(self.settings.captions.keep_warm_minutes)
+        self.keep_warm.blockSignals(False)
         for name, control in self.controls.items():
             control.blockSignals(True)
             value = getattr(self.settings.captions, name)
@@ -120,7 +141,7 @@ class RemoteSection(SettingsSection):
             "prefer HTTPS on shared networks. The server controls its own retention."
         )
         group.add(self.notice)
-        save = QPushButton("Save processing choice")
+        save = self.save_button = QPushButton("Save processing choice")
         save.setObjectName("primary")
         save.clicked.connect(self.save_choice)
         group.add(save)
@@ -169,4 +190,5 @@ class RemoteSection(SettingsSection):
             if remote
             else "Saved. Speech recognition runs on this computer."
         )
+        confirm_action(self.save_button)
         self.restart_capture_requested.emit()

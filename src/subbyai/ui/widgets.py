@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..core.settings import OverlayPreset, QualityTier
 from . import theme, tokens
+from .motion import Tween, interactive, reveal
 from .tokens import RADIUS, SPACE
 
 #: Loud enough to count as "we can hear something", quiet enough that room tone
@@ -96,6 +97,7 @@ class LevelMeter(QWidget):
         self._raw = 0.0
         self._level = 0.0
         self._speech = False
+        self._motion = Tween(self, self._display_level)
 
     @property
     def level(self) -> float:
@@ -107,8 +109,11 @@ class LevelMeter(QWidget):
         scaled = max(0.0, min(1.0, self._raw / self.FULL_SCALE))
         if abs(scaled - self._level) < 0.02 and speech == self._speech:
             return
-        self._level = scaled
         self._speech = speech
+        self._motion.to(scaled, "fast")
+
+    def _display_level(self, level: float) -> None:
+        self._level = level
         self.update()
 
     def paintEvent(self, event) -> None:  # Qt API casing
@@ -127,7 +132,7 @@ class LevelMeter(QWidget):
         for index in range(self.BARS):
             # Middle bars are tallest, so the meter reads as a level, not a bar chart.
             scale = 1.0 - abs(index - (self.BARS - 1) / 2) / self.BARS
-            height = max(3.0, self.height() * (0.45 + 0.55 * scale))
+            height = max(3.0, self.height() * scale * (0.25 + 0.75 * self._level))
             y = (self.height() - height) / 2
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(active if index < lit else idle)
@@ -152,6 +157,7 @@ class StatusBanner(QFrame):
         layout.setSpacing(SPACE["md"])
 
         self._text = QLabel()
+        self._text.setTextFormat(Qt.TextFormat.PlainText)
         self._text.setWordWrap(True)
         layout.addWidget(self._text, stretch=1)
 
@@ -162,10 +168,11 @@ class StatusBanner(QFrame):
         layout.addWidget(self._action)
 
         self._dismiss = QPushButton("✕")
+        self._dismiss.setAccessibleName("Dismiss notification")
         self._dismiss.setObjectName("quiet")
         self._dismiss.setFixedWidth(28)
         self._dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._dismiss.clicked.connect(self.hide)
+        self._dismiss.clicked.connect(lambda: reveal(self, False))
         layout.addWidget(self._dismiss)
 
         self._action_key = ""
@@ -180,7 +187,7 @@ class StatusBanner(QFrame):
         self._action.setText(action)
         self._action.setVisible(bool(action))
         self._restyle()
-        self.show()
+        reveal(self, True)
 
     def _restyle(self) -> None:
         palette = theme.current()
@@ -197,9 +204,12 @@ class StatusBanner(QFrame):
             f" border-radius: {RADIUS['md']}px; }}"
         )
 
+    def refresh_theme(self) -> None:
+        self._restyle()
+
     def _on_action(self) -> None:
         self.action_clicked.emit(self._action_key)
-        self.hide()
+        reveal(self, False)
 
 
 class PrivacyBadge(QLabel):
@@ -291,6 +301,10 @@ class Card(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._selected = False
         self._enabled_reason = ""
+        self._pressed = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(title)
+        interactive(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(SPACE["lg"], SPACE["md"], SPACE["lg"], SPACE["md"])
@@ -338,7 +352,23 @@ class Card(QFrame):
 
     def mousePressEvent(self, event) -> None:  # Qt API casing
         if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if (self._pressed and self.isEnabled() and event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
             self.clicked.emit()
+        self._pressed = False
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        keys = (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        if self.isEnabled() and event.key() in keys and not event.isAutoRepeat():
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
 
 
 class SectionLabel(QLabel):
@@ -380,16 +410,18 @@ class Toast(QFrame):
         return self._label.text()
 
     def show_message(self, text: str, action: str = "", seconds: float = 8.0) -> None:
+        self._timer.stop()
         self._label.setText(text)
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
         self._action.setText(action)
         self._action.setVisible(bool(action))
-        self.setVisible(True)
+        reveal(self, True)
         if seconds > 0:
             self._timer.start(int(seconds * 1000))
 
     def dismiss(self) -> None:
         self._timer.stop()
-        self.setVisible(False)
+        reveal(self, False)
 
     def refresh_theme(self) -> None:
         palette = theme.current()

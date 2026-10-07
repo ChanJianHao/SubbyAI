@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 from ..core.events import PrivacyTier
 from . import theme
 from .history_widgets import Hairline, blend
+from .motion import reveal
+from .motion_widgets import ActivityIndicator
 from .tokens import RADIUS, SPACE, Palette
 
 DRAWER_WIDTH = 320
@@ -156,6 +158,8 @@ class AskAiDrawer(QWidget):
         self.ask_button = QPushButton("Ask")
         self.ask_button.clicked.connect(self.ask_question)
         ask_row.addWidget(self.ask_button)
+        self.activity = ActivityIndicator(self)
+        ask_row.addWidget(self.activity)
         root.addLayout(ask_row)
 
         self._restyle(theme.current())
@@ -216,14 +220,14 @@ class AskAiDrawer(QWidget):
     def _grant_consent(self) -> None:
         self._consent = True
         self.consent_granted.emit()
-        self.consent_panel.hide()
+        reveal(self.consent_panel, False)
         pending, self._pending = self._pending, None
         if pending:
             self._dispatch(*pending)
 
     def _cancel_pending(self) -> None:
         self._pending = None
-        self.consent_panel.hide()
+        reveal(self.consent_panel, False)
 
     def _dispatch(self, question: str, excerpt: str) -> None:
         assistant = self._assistant
@@ -261,9 +265,13 @@ class AskAiDrawer(QWidget):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        for button in (self.summarize_button, self.ask_button, self.explain_button):
-            button.setEnabled(not busy)
-        self.question_field.setEnabled(not busy)
+        self.activity.set_busy(busy)
+        self.ask_button.setText("Asking…" if busy else "Ask")
+        available = self._assistant is not None and not busy
+        self.summarize_button.setEnabled(available)
+        self.ask_button.setEnabled(available)
+        self.explain_button.setEnabled(available and bool(self._selection_source()))
+        self.question_field.setEnabled(available)
 
     def _append(self, html_text: str) -> None:
         self.answers.append(html_text)
@@ -325,7 +333,7 @@ class _ConsentPanel(QFrame):
             f"{len(excerpt):,} characters will be sent.\n“{preview}”" if preview else ""
         )
         self.preview.setTextFormat(Qt.TextFormat.PlainText)
-        self.show()
+        reveal(self, True)
 
     def restyle(self, palette: Palette) -> None:
         # Blended rather than the token's translucent tint: this panel must stay

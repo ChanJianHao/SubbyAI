@@ -19,8 +19,17 @@ of the operator, DNS resolution or what the server forwards elsewhere.
 
 ## Local data
 
-New installs do not save transcripts until the user opts in. Explicit stored history preferences are preserved. Enabled history stores original text and later translation updates in local
-SQLite/FTS5. Retention options and deletion are available in General settings. Settings and history
+New installs do not save transcripts until the user opts in. A fresh live-only install does not
+create a transcript database. Original text, translated text and session metadata have separate
+storage choices; excluded text is removed before entering the disk writer. Turning off both text
+choices saves only session dates and languages. Failed translations are not saved.
+Session-only retention keeps new captions in memory, and **Clear Live when stopping** also removes
+the in-app transcript after Stop. Existing saved history is retained until explicitly deleted or
+expired by its policy. Audio is never recorded to disk by the live pipeline.
+
+Enabled history uses local SQLite/FTS5. Retention runs at startup, when its settings change and
+hourly while the app remains open, protecting the active session. Storage failures produce a
+separate persistent warning while live captions continue. Settings and history
 are not encrypted by SubbyAI; other programs with access to the user account may read them.
 The installer keeps user data on uninstall so reinstalling can restore it.
 
@@ -29,7 +38,8 @@ diagnostics. Logs redact common credential formats, authorization values and hom
 tracebacks. Caption text is not deliberately logged. Redaction is a mitigation, not proof that every
 possible third-party error string is harmless: review a log before sharing it.
 
-Deletion uses SQLite secure-delete and flushes queued writes before deleting. Filesystem snapshots,
+Deletion uses SQLite secure-delete and flushes queued writes before deleting. If queued writes
+fail, deletion reports the failure so it can be retried rather than claiming success. Filesystem snapshots,
 backups and storage-device behavior can retain copies. Deleting app data cannot erase copies already
 sent to a server or exported by the user.
 

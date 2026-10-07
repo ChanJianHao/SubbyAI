@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from subbyai.core.events import CaptionSegment, PrivacyTier, TranslationState
 from subbyai.storage.session_store import SearchHit
 
@@ -64,7 +66,7 @@ def test_search_tolerates_punctuation_query(store):
     session_id = store.create_session("S")
     store.add_segment(session_id, _seg("hello world"))
     store.flush()
-    assert store.search('"') == [] or True  # must not raise
+    assert store.search('"') == []
     assert len(store.search("hello")) == 1
 
 
@@ -125,3 +127,72 @@ def test_add_segment_does_not_block_without_writer(store):
     store.add_segment(session_id, _seg("queued"))
     store.flush()  # drains synchronously when the writer isn't running
     assert len(store.segments(session_id)) == 1
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_failed_write_is_reported_and_next_batch_can_recover(store, monkeypatch, background):
+    import contextlib
+    import sqlite3
+
+    from subbyai.storage.session_store import HistoryWriteError
+
+    session = store.create_session("Write failure")
+    original_connect = store._connect
+    notices = []
+    store._on_write_failure = lambda: notices.append(True)
+
+    @contextlib.contextmanager
+    def unavailable():
+        raise sqlite3.OperationalError("Disk is full")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(store, "_connect", unavailable)
+    if background:
+        store.start_writer()
+    store.add_segment(session, _seg("private content that must not be logged"))
+    with pytest.raises(HistoryWriteError):
+        store.flush()
+    assert store.dropped_writes == 1
+    assert notices == [True]
+    monkeypatch.setattr(store, "_connect", original_connect)
+    store.add_segment(session, _seg("Recovered caption"))
+    store.flush()
+    assert [s.text for s in store.segments(session)] == ["Recovered caption"]
+
+
+def test_queue_overflow_is_visible_and_bounded(store):
+    from subbyai.storage.session_store import HistoryWriteError
+
+    session = store.create_session("Bounded")
+    notices = []
+    store._on_write_failure = lambda: notices.append(True)
+    for _ in range(513):
+        store.add_segment(session, _seg("caption"))
+    assert store.pending_count == 512
+    assert store.dropped_writes == 1
+    assert notices == [True]
+    with pytest.raises(HistoryWriteError):
+        store.flush()
+    assert len(store.segments(session)) == 512
+
+
+def test_translation_only_sessions_have_meaningful_word_counts(store):
+    session = store.create_session("Translated only")
+    store.add_segment(session, _seg("", "three translated words"))
+    store.flush()
+    assert store.get_session(session).word_count == 3
+    assert store.list_sessions()[0].word_count == 3
+
+
+def test_empty_metadata_session_has_zero_word_count(store):
+    session = store.create_session("Metadata only")
+    assert store.get_session(session).word_count == 0
+
+
+def test_retention_never_deletes_the_current_session(store):
+    active = store.create_session("Still running")
+    with store._connect() as conn:
+        conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (0, active))
+    assert store.apply_retention(1, active_session=active) == 0
+    assert store.get_session(active) is not None
+    assert store.apply_retention(1) == 1

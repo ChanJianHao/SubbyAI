@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -26,6 +25,8 @@ from ..branding import APP_FULL_NAME, APP_NAME
 from ..core.health import HealthReport, HealthState
 from ..core.settings import Settings
 from . import theme
+from .motion import MotionStack
+from .motion_widgets import SelectionMarker
 from .tokens import SPACE
 from .widgets import fit_to_screen
 
@@ -61,6 +62,7 @@ class Shell(QMainWindow):
         super().__init__(parent)
         self._settings = settings
         self._quitting = False
+        self._health_report = HealthReport(HealthState.OFF)
 
         self.setWindowTitle(APP_FULL_NAME)
         self.setWindowIcon(theme.app_icon())
@@ -72,7 +74,7 @@ class Shell(QMainWindow):
         root.setSpacing(0)
         root.addWidget(self._build_header())
 
-        self.stack = QStackedWidget()
+        self.stack = MotionStack()
         root.addWidget(self.stack, stretch=1)
         self.setCentralWidget(central)
 
@@ -81,6 +83,10 @@ class Shell(QMainWindow):
         fit_to_screen(self, *WINDOW_SIZE)
         self._restore_geometry()
         self._install_shortcuts()
+        theme.subscribe(self._theme_changed)
+
+    def _theme_changed(self, _palette) -> None:
+        self.set_health(self._health_report)
 
     # ---------- construction ----------
 
@@ -114,6 +120,8 @@ class Shell(QMainWindow):
             self._segment_group.addButton(button, index)
             segment_layout.addWidget(button)
         self._segment_group.idClicked.connect(self.show_segment)
+        self._segment_marker = SelectionMarker(segments)
+        self._segment_marker.select(self._segment_group.button(0))
         layout.addWidget(segments)
         layout.addStretch(1)
 
@@ -148,6 +156,7 @@ class Shell(QMainWindow):
         button = self._segment_group.button(index)
         if button is not None:
             button.setChecked(True)
+            self._segment_marker.select(button)
         self.segment_changed.emit(index)
 
     @property
@@ -157,6 +166,7 @@ class Shell(QMainWindow):
     # ---------- status ----------
 
     def set_health(self, report: HealthReport) -> None:
+        self._health_report = report
         text, colour_name = _STATUS_DOTS.get(report.state, ("", "text_tertiary"))
         palette = theme.current()
         colour = getattr(palette, colour_name, palette.text_tertiary)

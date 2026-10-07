@@ -245,7 +245,7 @@ class AudioCheckStep(Step):
         self, settings: Settings, devices: list | None = None, parent: QWidget | None = None
     ) -> None:
         super().__init__(settings, parent)
-        self.add_body("Play anything — a video, some music — and watch the meter.")
+        self._instructions = self.add_body("")
         self._devices = list(devices or [])
         self._heard = False
         self._source: Callable[[], float] | None = None
@@ -260,14 +260,18 @@ class AudioCheckStep(Step):
         meter_row.addWidget(self._status, 1)
         self._root.addLayout(meter_row)
 
+        self._kind = compact_combo(QComboBox())
+        self._kind.addItem("System audio · hear what's playing", "system")
+        self._kind.addItem("Microphone · hear the room", "microphone")
+        self._kind.setCurrentIndex(max(0, self._kind.findData(settings.audio.source)))
+        self._kind.activated.connect(self._pick_source)
+        self._root.addWidget(self._kind)
         self._picker_label = QLabel("Listen to")
         self._root.addWidget(self._picker_label)
         self._picker = compact_combo(QComboBox())
-        for device in self._devices:
-            suffix = " — current" if getattr(device, "is_default", False) else ""
-            self._picker.addItem(f"{device.name}{suffix}", device.id)
         self._picker.activated.connect(self._pick_device)
         self._root.addWidget(self._picker)
+        self._refresh_devices()
         self._set_picker_visible(True)
         self._root.addStretch(1)
 
@@ -294,7 +298,7 @@ class AudioCheckStep(Step):
             self._heard = True
             self._silence.stop()
             self._status.setText("We can hear it. You're set.")
-            self._set_picker_visible(False)
+            self._set_picker_visible(True)
 
     def on_enter(self) -> None:
         if not self._heard:
@@ -320,10 +324,16 @@ class AudioCheckStep(Step):
         """Name what is wrong and offer the one control that can fix it."""
         if self._heard:
             return
+        if self.settings.audio.source == "microphone":
+            self._status.setText(
+                "Nothing yet. Speak near the selected microphone. If the meter stays quiet, "
+                "check microphone permissions in system settings."
+            )
+            return
         if sys.platform == "darwin":
             self._status.setText(
-                "macOS asks for permission before any app can hear system audio. "
-                "Nothing is recorded or uploaded."
+                "System audio on macOS needs a loopback input such as BlackHole. "
+                "Choose that input below, or switch to Microphone."
             )
             return
         if not self._devices:
@@ -338,16 +348,51 @@ class AudioCheckStep(Step):
         self._set_picker_visible(True)
 
     def _set_picker_visible(self, visible: bool) -> None:
-        show = visible and bool(self._devices)
+        show = visible and self._picker.count() > 0
         self._picker_label.setVisible(show)
         self._picker.setVisible(show)
 
     def _pick_device(self, index: int) -> None:
-        if not 0 <= index < len(self._devices):
+        device_id = self._picker.itemData(index)
+        device = next((d for d in self._devices if d.id == device_id), None)
+        if device is None:
             return
-        device = self._devices[index]
         self.settings.audio.device_id = device.id
         self.settings.audio.device_name = device.name
         self._heard = False
-        self._status.setText("Listening to this output…")
+        self._status.setText("Listening to this source…")
+        self._silence.start()
         self.device_chosen.emit()
+
+    def _pick_source(self, index: int) -> None:
+        self.settings.audio.source = self._kind.itemData(index)
+        self.settings.audio.device_id = None
+        self.settings.audio.device_name = ""
+        self._heard = False
+        self._meter.set_level(0)
+        self._status.setText("Listening for sound…")
+        self._refresh_devices()
+        self._silence.start()
+        self.device_chosen.emit()
+
+    def _refresh_devices(self) -> None:
+        self._picker.clear()
+        for device in self._devices:
+            if device.source == self.settings.audio.source:
+                suffix = " — system default" if device.is_default else ""
+                self._picker.addItem(device.name + suffix, device.id)
+        from ..audio.base import resolve_device
+
+        selected = resolve_device(
+            self._devices,
+            self.settings.audio.device_id,
+            self.settings.audio.device_name,
+            source=self.settings.audio.source,
+        )
+        if selected:
+            self._picker.setCurrentIndex(max(0, self._picker.findData(selected.id)))
+        self._instructions.setText(
+            "Speak near your microphone and watch the meter. Audio is never saved."
+            if self.settings.audio.source == "microphone"
+            else "Play a video or some music and watch the meter. Audio is never saved."
+        )

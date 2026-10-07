@@ -16,12 +16,14 @@ from subbyai.core.events import CaptionSegment, PrivacyTier  # noqa: E402
 from subbyai.core.settings import SettingsStore  # noqa: E402
 from subbyai.ui import theme  # noqa: E402
 from subbyai.ui.live_view import LiveView  # noqa: E402
+from subbyai.ui.motion import policy  # noqa: E402
 from subbyai.ui.settings_view import SettingsDeps, SettingsView  # noqa: E402
 from subbyai.ui.shell import Shell  # noqa: E402
 
 
 def main():
     app = QApplication([])
+    policy().configure(True)  # Documentation captures the settled layout.
     if sys.platform == "win32":
         from PySide6.QtGui import QFontDatabase
 

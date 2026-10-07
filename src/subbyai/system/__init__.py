@@ -1,4 +1,4 @@
-"""Operating-system integration: hotkeys, window effects, focus, launch guard.
+"""Operating-system integration: hotkeys, window effects and launch guard.
 
 ``hotkeys`` is the one module in the package that imports Qt, so it is resolved
 lazily. Anything else here can be used from the audio or engine layers without
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .foreground import foreground_app_name, is_fullscreen_foreground
 from .single_instance import SingleInstance
 from .window_effects import (
     apply_backdrop,
@@ -46,8 +45,6 @@ __all__ = [
     "apply_rounded_corners",
     "exclude_from_capture",
     "find_conflicts",
-    "foreground_app_name",
-    "is_fullscreen_foreground",
     "is_valid_global",
     "normalize_sequence",
     "parse_sequence",

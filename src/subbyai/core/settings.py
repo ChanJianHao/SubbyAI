@@ -96,6 +96,7 @@ class CaptionSettings:
     silence_seconds: float = 0.5
     compute_type: str = "auto"
     cpu_threads: int = 0  # 0 = choose safely
+    keep_warm_minutes: int = 2  # 0 = release after stop; bounded idle RAM/VRAM
 
 
 @dataclass
@@ -126,6 +127,9 @@ class OverlaySettings:
     # Custom preset overrides
     custom_bg_color: str = "#12141880"
     custom_text_color: str = "#FFFFFF"
+    custom_translation_color: str = "#FFF4DD"
+    custom_border_color: str = "#FFFFFF"
+    custom_border_width: float = 0.0
     custom_radius: int = 14
     custom_outline: bool = False
     custom_shadow: bool = True
@@ -141,12 +145,15 @@ class OverlaySettings:
     screen_name: str = ""
     outline_width: float = 1.5
     max_lines: int = 4  # per language; long phrases end with an ellipsis
+    always_on_top: bool = True
+    saved_themes: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
 class AudioSettings:
     device_id: str | None = None  # None = system default output
     device_name: str = ""  # remembered for reconnect + display
+    source: str = "system"  # system | microphone; never fall back between kinds
 
 
 @dataclass
@@ -175,6 +182,9 @@ class IntelligenceSettings:
 class HistorySettings:
     enabled: bool = False
     retention_days: int = 90  # 0 = forever, -1 = session only
+    save_original: bool = True
+    save_translation: bool = True
+    clear_live_on_stop: bool = False
 
 
 @dataclass
@@ -198,6 +208,7 @@ class ShortcutSettings:
 @dataclass
 class GeneralSettings:
     theme: str = "system"  # system | light | dark
+    reduce_motion: bool = False
     close_to_tray: bool = True
     start_with_os: bool = False
     autostart_captions: bool = False
@@ -207,6 +218,7 @@ class GeneralSettings:
     accessibility_mode: bool = False
     advanced_mode: bool = False
     accent: str = "sakura"  # sakura | lavender | ocean
+    text_scale: float = 1.0
 
 
 @dataclass
@@ -244,7 +256,6 @@ class Settings:
         return bool(target) and target != self.captions.source_language
 
 
-
 # Clamps applied on load, so a bad file degrades instead of breaking.
 _CLAMPS: dict[str, tuple[float, float]] = {
     "overlay.font_size": (10, 72),
@@ -253,11 +264,14 @@ _CLAMPS: dict[str, tuple[float, float]] = {
     "overlay.opacity": (0.2, 1.0),
     "overlay.auto_hide_seconds": (1.0, 30.0),
     "overlay.custom_radius": (0, 24),
+    "overlay.custom_border_width": (0.0, 5.0),
     "history.retention_days": (-1, 3650),
     "captions.beam_size": (1, 10),
     "captions.chunk_seconds": (2.0, 15.0),
     "captions.silence_seconds": (0.2, 2.0),
     "captions.cpu_threads": (0, 16),
+    "captions.keep_warm_minutes": (0, 30),
+    "general.text_scale": (1.0, 1.5),
     "overlay.line_spacing": (0.0, 2.5),
     "overlay.outline_width": (0.5, 5.0),
     "overlay.max_lines": (1, 8),
@@ -363,6 +377,7 @@ class SettingsStore:
             log.exception("Could not save settings")
             raise
 
+
 # ---------- dataclass <-> dict with coercion ----------
 
 
@@ -431,10 +446,11 @@ def _validate(settings: Settings) -> None:
         "captions.compute_device": {"auto", "gpu", "cpu"},
         "captions.compute_type": {"auto", "int8", "float16", "float32", "int8_float16"},
         "captions.speech_sensitivity": {"low", "standard", "high"},
-        "captions.performance_profile": {"fast", "balanced", "accurate", "custom"},
+        "captions.performance_profile": {"fast", "balanced", "accurate", "maximum", "custom"},
         "overlay.align": {"", "left", "center", "right"},
         "overlay.padding": {"", "tight", "normal", "roomy"},
         "processing.asr_backend": {"local", "remote"},
+        "audio.source": {"system", "microphone"},
         "intelligence.on_translator_unavailable": {"show_original", "pause"},
     }
     defaults = Settings()
@@ -449,7 +465,12 @@ def _validate(settings: Settings) -> None:
         value = getattr(settings.captions, name)
         if value and not re.fullmatch(r"[a-z]{2,3}", value):
             setattr(settings.captions, name, "")
-    for name, sizes in (("custom_text_color", (3, 6)), ("custom_bg_color", (6, 8))):
+    for name, sizes in (
+        ("custom_text_color", (3, 6)),
+        ("custom_translation_color", (3, 6)),
+        ("custom_border_color", (3, 6, 8)),
+        ("custom_bg_color", (6, 8)),
+    ):
         value = getattr(settings.overlay, name)
         if not re.fullmatch(r"#[0-9a-fA-F]+", value) or len(value) - 1 not in sizes:
             setattr(settings.overlay, name, getattr(defaults.overlay, name))
@@ -472,6 +493,13 @@ def _validate(settings: Settings) -> None:
         for value in settings.general.usage_intents
         if value in ("video", "games", "calls", "everything")
     ]
+    from .overlay_themes import MAX_THEMES, sanitized, valid_name
+
+    settings.overlay.saved_themes = {
+        name.strip(): sanitized(value)
+        for name, value in list(settings.overlay.saved_themes.items())[:MAX_THEMES]
+        if valid_name(name) and isinstance(value, dict)
+    }
 
 
 def _geometry(value: Any) -> list[int]:

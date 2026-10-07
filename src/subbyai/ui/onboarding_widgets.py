@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..core.settings import OverlayPreset
 from . import theme
+from .motion import Tween
 from .tokens import OVERLAY_PRESETS, RADIUS, SPACE
 from .widgets import SOUND_LEVEL, LevelMeter
 
@@ -53,25 +54,25 @@ class ProgressDots(QWidget):
         super().__init__(parent)
         self._total = max(1, total)
         self._index = 0
-        self.setFixedSize(self._total * 12 + 8, 12)
+        self._position = Tween(self, lambda _value: self.update())
+        self.setFixedSize(self._total * 14 + 8, 12)
 
     def set_index(self, index: int) -> None:
         self._index = index
-        self.update()
+        self.setAccessibleName(f"Setup step {index + 1} of {self._total}")
+        self._position.to(float(index))
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         palette = theme.current()
         painter.setPen(Qt.PenStyle.NoPen)
-        x = 0.0
         top = (self.height() - 6) / 2
         for step in range(self._total):
-            active = step == self._index
-            painter.setBrush(qcolor(palette.accent if active else palette.stroke))
-            width = 14.0 if active else 6.0
-            painter.drawRoundedRect(QRectF(x, top, width, 6.0), 3.0, 3.0)
-            x += width + 6.0
+            painter.setBrush(qcolor(palette.stroke))
+            painter.drawEllipse(QRectF(step * 14.0 + 4, top, 6.0, 6.0))
+        painter.setBrush(qcolor(palette.accent))
+        painter.drawRoundedRect(QRectF(self._position.value * 14, top, 14, 6), 3, 3)
         painter.end()
 
 

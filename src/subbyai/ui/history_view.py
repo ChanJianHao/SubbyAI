@@ -96,6 +96,9 @@ class HistoryView(QWidget):
         self._history_enabled = True
         self._previews: dict[int, str] = {}
         self._rows: list[SessionRow] = []
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._fill_previews)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -204,7 +207,7 @@ class HistoryView(QWidget):
         self._storage_label.setText(
             f"{STORAGE_PREFIX} · {human_bytes(self._store.storage_bytes())} used"
         )
-        QTimer.singleShot(0, self._fill_previews)
+        self._preview_timer.start(0)
 
     def _render_sessions(self) -> None:
         for label, sessions in group_sessions(self._sessions):

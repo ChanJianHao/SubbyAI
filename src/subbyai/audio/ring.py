@@ -79,15 +79,14 @@ class RingBuffer:
             if end <= capacity:
                 out = self._buffer[start:end].copy()
             else:
-                out = np.concatenate(
-                    (self._buffer[start:], self._buffer[: end - capacity])
-                )
+                out = np.concatenate((self._buffer[start:], self._buffer[: end - capacity]))
             self._size -= count
             return out
 
     def clear(self) -> None:
         """Discard pending audio and reset the drop count (a fresh start)."""
         with self._lock:
+            self._buffer.fill(0)
             self._write = 0
             self._size = 0
             self._dropped = 0

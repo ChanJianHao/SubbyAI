@@ -13,7 +13,6 @@ from collections.abc import Callable
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QColor, QFontDatabase
 from PySide6.QtWidgets import (
-    QCheckBox,
     QColorDialog,
     QComboBox,
     QHBoxLayout,
@@ -26,8 +25,11 @@ from PySide6.QtWidgets import (
 
 from ..core.settings import OriginalPosition, OverlayPreset, SettingsStore
 from . import theme
+from .motion import Expandable
+from .motion_widgets import MotionToggle as QCheckBox
+from .saved_themes import SavedThemes
 from .settings_widgets import CardGrid, ChoiceCard, Group, SettingsSection
-from .tokens import CAPTION_FONT_CHOICES, OVERLAY_PRESETS, RADIUS, SPACE, hex_to_rgb
+from .tokens import CAPTION_FONT_CHOICES, OVERLAY_PRESETS, RADIUS, SPACE, parse_rgba, rgba_css
 from .widgets import compact_combo, preset_label
 
 __all__ = ["CaptionsSection"]
@@ -122,7 +124,8 @@ def installed_caption_fonts() -> list[str]:
     the list alone would offer fonts that silently render as something else.
     ``hasFamily`` is the only honest test.
     """
-    return [name for name in CAPTION_FONT_CHOICES if QFontDatabase.hasFamily(name)]
+    preferred = [name for name in CAPTION_FONT_CHOICES if QFontDatabase.hasFamily(name)]
+    return preferred + sorted(set(QFontDatabase.families()) - set(preferred), key=str.casefold)
 
 
 def weights_for(family: str) -> tuple[tuple[str, int], ...]:
@@ -130,12 +133,8 @@ def weights_for(family: str) -> tuple[tuple[str, int], ...]:
     if not family or not QFontDatabase.hasFamily(family):
         return _WEIGHTS
 
-    styles = {s.lower() for s in QFontDatabase.styles(family)}
-    available = tuple(
-        (label, value)
-        for label, value in _WEIGHTS
-        if label.lower() in styles or (label == "Regular" and "book" in styles)
-    )
+    weights = {QFontDatabase.weight(family, style) for style in QFontDatabase.styles(family)}
+    available = tuple((label, value) for label, value in _WEIGHTS if value in weights)
     return available or (("Regular", 400), ("Bold", 700))
 
 
@@ -161,13 +160,14 @@ class _SliderRow(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SPACE["sm"])
         self.slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.setFocusProxy(self.slider)
         self.slider.setRange(low, high)
-        self.slider.setFixedWidth(190)
+        self.slider.setMinimumWidth(100)
         self._caption = caption
         self._value = QLabel(self)
         self._value.setObjectName("tertiary")
         self._value.setMinimumWidth(64)
-        row.addWidget(self.slider)
+        row.addWidget(self.slider, 1)
         row.addWidget(self._value)
         self.slider.valueChanged.connect(self._show)
 
@@ -180,8 +180,9 @@ class _ColourButton(QPushButton):
 
     colour_picked = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, alpha: bool = False) -> None:
         super().__init__(parent)
+        self._alpha = alpha
         self.setFixedSize(64, 28)
         self._hex = "#FFFFFF"
         self.clicked.connect(self._pick)
@@ -192,21 +193,32 @@ class _ColourButton(QPushButton):
 
     def set_hex(self, value: str) -> None:
         self._hex = value if value.startswith("#") else f"#{value}"
+        self.setToolTip("Choose colour · " + self._hex)
+        self.setAccessibleDescription("Current colour " + self._hex)
         self.refresh_theme()
 
     def refresh_theme(self) -> None:
         palette = theme.current()
         self.setStyleSheet(
-            f"QPushButton {{ background: {self._hex};"
+            f"QPushButton {{ background: {rgba_css(parse_rgba(self._hex, (255, 255, 255, 255)))};"
             f" border: 1px solid {palette.stroke};"
             f" border-radius: {RADIUS['sm']}px; }}"
         )
 
     def _pick(self) -> None:
-        red, green, blue = hex_to_rgb(self._hex)
-        chosen = QColorDialog.getColor(QColor(red, green, blue), self, "Pick a colour")
+        options = (
+            QColorDialog.ColorDialogOption.ShowAlphaChannel
+            if self._alpha else QColorDialog.ColorDialogOption(0)
+        )
+        chosen = QColorDialog.getColor(
+            QColor(*parse_rgba(self._hex, (255, 255, 255, 255))),
+            self, "Pick a colour", options,
+        )
         if chosen.isValid():
-            self.set_hex(chosen.name().upper())
+            value = chosen.name().upper()
+            if self._alpha:
+                value += f"{chosen.alpha():02X}"
+            self.set_hex(value)
             self.colour_picked.emit(self._hex)
 
 
@@ -220,8 +232,12 @@ class CaptionsSection(SettingsSection):
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
+        self.saved = SavedThemes(store, self)
+        self.saved.style_changed.connect(self._saved_applied)
+        column.addWidget(self.saved)
         column.addWidget(self._build_presets())
-        column.addWidget(self._build_custom())
+        self.custom_reveal = Expandable(self._build_custom())
+        column.addWidget(self.custom_reveal)
         column.addWidget(self._build_text())
         column.addWidget(self._build_behaviour())
         self.refresh()
@@ -235,6 +251,9 @@ class CaptionsSection(SettingsSection):
             self.preset_cards.add_card(preset.value, ChoiceCard(title, blurb))
         self.preset_cards.chosen.connect(self._on_preset)
         group.add(self.preset_cards)
+        customize = QPushButton("Make this look my own", self)
+        customize.clicked.connect(self._customize)
+        group.add(customize)
         return group
 
     def _build_custom(self) -> Group:
@@ -249,7 +268,22 @@ class CaptionsSection(SettingsSection):
 
         self.text_colour_button = _ColourButton(self)
         self.text_colour_button.colour_picked.connect(self._on_text_colour)
-        group.add_row("Text colour", self.text_colour_button)
+        group.add_row("Original text colour", self.text_colour_button)
+        self.translation_colour = _ColourButton(self)
+        self.translation_colour.colour_picked.connect(
+            lambda value: self._custom_value("custom_translation_color", value)
+        )
+        group.add_row("Translated text colour", self.translation_colour)
+        self.border_colour = _ColourButton(self, alpha=True)
+        self.border_colour.colour_picked.connect(
+            lambda value: self._custom_value("custom_border_color", value)
+        )
+        group.add_row("Border colour", self.border_colour)
+        self.border_width = _SliderRow(0, 50, lambda value: f"{value / 10:.1f} px", self)
+        self.border_width.slider.valueChanged.connect(
+            lambda value: self._custom_value("custom_border_width", value / 10)
+        )
+        group.add_row("Border width (0 = off)", self.border_width)
 
         self.outline = QCheckBox(self)
         self.outline.toggled.connect(self._on_outline)
@@ -275,7 +309,7 @@ class CaptionsSection(SettingsSection):
         self.font.currentIndexChanged.connect(self._on_font)
         group.add_row("Font", self.font)
 
-        self.font_size = _SliderRow(15, 60, lambda v: f"{v} px", self)
+        self.font_size = _SliderRow(10, 72, lambda v: f"{v} px", self)
         self.font_size.slider.valueChanged.connect(self._on_font_size)
         group.add_row("Text size", self.font_size)
 
@@ -316,6 +350,9 @@ class CaptionsSection(SettingsSection):
 
     def _build_behaviour(self) -> Group:
         group = Group("On screen")
+        self.topmost = QCheckBox("Keep subtitles above other windows", self)
+        self.topmost.toggled.connect(self._on_topmost)
+        group.add(self.topmost)
         from PySide6.QtGui import QGuiApplication
 
         self.monitor = compact_combo(QComboBox(self))
@@ -376,6 +413,7 @@ class CaptionsSection(SettingsSection):
     def refresh(self) -> None:
         overlay = self.settings.overlay
         with self.quiet():
+            self.topmost.setChecked(overlay.always_on_top)
             self.monitor.setCurrentIndex(max(0, self.monitor.findData(overlay.screen_name)))
             self.line_limit.setCurrentIndex(max(0, self.line_limit.findData(overlay.max_lines)))
             self.stroke_width.slider.setValue(round(overlay.outline_width * 10))
@@ -385,11 +423,14 @@ class CaptionsSection(SettingsSection):
             alpha = int(background[6:8], 16) if len(background) >= 8 else 255
             self.opacity.slider.setValue(round(alpha / 255 * 100))
             self.text_colour_button.set_hex(overlay.custom_text_color)
+            self.translation_colour.set_hex(overlay.custom_translation_color)
+            self.border_colour.set_hex(overlay.custom_border_color)
+            self.border_width.slider.setValue(round(overlay.custom_border_width * 10))
             self.outline.setChecked(overlay.custom_outline)
             self.shadow.setChecked(overlay.custom_shadow)
             self.radius.slider.setValue(overlay.custom_radius)
             self.font.setCurrentIndex(max(0, self.font.findData(overlay.font_family)))
-            self.font_size.slider.setValue(max(15, min(60, overlay.font_size)))
+            self.font_size.slider.setValue(overlay.font_size)
             self._reload_weights(overlay.font_weight)
             self.line_spacing.slider.setValue(
                 round((overlay.line_spacing or _preset_spacing(overlay)) * 100)
@@ -407,6 +448,42 @@ class CaptionsSection(SettingsSection):
             )
             self.never_hide.setChecked(not overlay.auto_hide)
         self._sync_enabled()
+        self.saved.refresh()
+
+    def _saved_applied(self) -> None:
+        self.refresh()
+        self.style_changed.emit()
+
+    def _on_topmost(self, checked: bool) -> None:
+        self.settings.overlay.always_on_top = checked
+        self._changed()
+
+    def _custom_value(self, name: str, value) -> None:
+        setattr(self.settings.overlay, name, value)
+        self._changed()
+
+    def _customize(self) -> None:
+        from .tokens import overlay_style
+
+        overlay = self.settings.overlay
+        style = overlay_style(overlay.preset, overlay)
+        def colour(values):
+            return "#" + "".join(f"{value:02X}" for value in values)
+        overlay.custom_bg_color = colour(style.background)
+        overlay.custom_text_color = colour(style.text_color)
+        overlay.custom_translation_color = colour(style.translation_color)
+        overlay.custom_border_color = colour(style.border) if style.border else "#FFFFFF"
+        overlay.custom_border_width = style.border_width if style.border else 0.0
+        overlay.custom_outline = style.outline
+        overlay.custom_shadow = style.shadow
+        overlay.custom_radius = style.radius
+        overlay.font_size = style.font_size
+        overlay.font_weight = style.font_weight
+        overlay.line_spacing = style.line_spacing
+        overlay.align = style.align
+        overlay.preset = OverlayPreset.CUSTOM
+        self.refresh()
+        self._changed()
 
     def _on_monitor(self, index: int) -> None:
         self.settings.overlay.screen_name = self.monitor.itemData(index)
@@ -426,6 +503,7 @@ class CaptionsSection(SettingsSection):
     def _sync_enabled(self) -> None:
         preset = self.settings.overlay.preset
         self.custom_group.setEnabled(preset is OverlayPreset.CUSTOM)
+        self.custom_reveal.set_expanded(preset is OverlayPreset.CUSTOM)
         self.auto_hide_seconds.setEnabled(self.settings.overlay.auto_hide)
         # A preset that refuses to animate must not show a live toggle claiming
         # otherwise. The checkbox is shown unchecked and disabled, but the

@@ -8,11 +8,14 @@ the cloud consent line impossible to skip.
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from ...core.events import PrivacyTier
 from ...core.settings import ProviderSettings
 from ...translation import BUILTIN_PROVIDER_ID
+from ..motion import confirm_action, reveal
+from ..motion_widgets import ActivityIndicator
+from ..motion_widgets import MotionToggle as QCheckBox
 from ..tokens import SPACE
 from ..widgets import PrivacyBadge, elide_label
 from .common import hint_label, show_tier
@@ -56,6 +59,7 @@ class ProviderRow(QWidget):
         self.test_button = QPushButton("Test", self)
         self.test_button.setObjectName("quiet")
         self.test_button.clicked.connect(lambda: self.test_requested.emit(self.provider_id))
+        self.activity = ActivityIndicator(self, size=16)
         line.addWidget(self.dot)
         # The name is the only elastic thing in this row: badge, toggle and
         # buttons all need their full width to stay usable, so the name gives
@@ -65,6 +69,7 @@ class ProviderRow(QWidget):
         line.addWidget(self.badge)
         line.addWidget(self.use)
         line.addWidget(self.test_button)
+        line.addWidget(self.activity)
         # Keyboard reordering, because dragging cannot be the only way to set an order.
         for glyph, step, tip in _MOVES:
             button = QPushButton(glyph, self)
@@ -94,12 +99,17 @@ class ProviderRow(QWidget):
 
     def show_note(self, text: str, state: str = "idle") -> None:
         self.note.setText(text)
-        self.note.setVisible(bool(text))
+        reveal(self.note, bool(text))
         self.dot.set_state(state)
+        self.activity.set_busy(state == "busy")
+        self.test_button.setEnabled(state != "busy")
+        self.test_button.setText("Checking…" if state == "busy" else "Test")
+        if state == "ok":
+            confirm_action(self.test_button, "Connected ✓")
 
     def ask_consent(self, text: str) -> None:
-        self.show_note(text, "busy")
-        self.consent_button.setVisible(True)
+        self.show_note(text)
+        reveal(self.consent_button, True)
 
     def set_use(self, on: bool) -> None:
         """Set the tick without reporting it, for reverting a refused change."""

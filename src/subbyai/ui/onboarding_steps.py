@@ -17,7 +17,6 @@ from functools import partial
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -36,6 +35,7 @@ from ..languages import (
     sorted_languages,
 )
 from . import theme
+from .motion_widgets import MotionToggle as QCheckBox
 from .onboarding_widgets import DualPreview, KeyCapRow, SelectCard, StyleCard
 from .tokens import RADIUS, SPACE
 from .widgets import (
@@ -182,7 +182,7 @@ class UsageStep(Step):
 
         self._accessibility = SelectCard(
             ACCESSIBILITY_LABEL,
-            "Bigger, opaque captions that never fade away, and transcripts kept for later.",
+            "Bigger, opaque captions that never fade away, with less motion.",
         )
         self._accessibility.toggled.connect(self._apply)
         self._root.addWidget(self._accessibility)
@@ -224,7 +224,6 @@ class UsageStep(Step):
             preset = OverlayPreset.HIGH_CONTRAST
             auto_hide = False
             font_size = max(font_size, ACCESSIBLE_FONT_SIZE)
-            self.settings.history.enabled = True
         self.settings.general.usage_intents = intents
         self.settings.general.accessibility_mode = accessible
         self.settings.overlay.preset = preset

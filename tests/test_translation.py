@@ -955,5 +955,3 @@ def test_deleting_everything_reclaims_the_download_cache(argos_dirs):
     assert remove_all_packs(argos_dirs) == 1500
     assert not cache.exists(), "archives must not survive 'delete all my data'"
     assert installed_bytes(argos_dirs) == 0
-
-
