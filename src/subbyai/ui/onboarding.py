@@ -227,7 +227,14 @@ class OnboardingWizard(QDialog):
     def _centre(self) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
-            self.move(screen.availableGeometry().center() - self.rect().center())
+            frame = self.frameGeometry()
+            frame.moveCenter(screen.availableGeometry().center())
+            self.move(frame.topLeft())
+
+    def showEvent(self, event) -> None:  # Qt API casing
+        super().showEvent(event)
+        # The native frame dimensions are available only after the first show.
+        self._centre()
 
     # ---------- navigation ----------
 

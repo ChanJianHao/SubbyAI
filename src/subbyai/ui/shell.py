@@ -188,8 +188,19 @@ class Shell(QMainWindow):
         from PySide6.QtGui import QGuiApplication
 
         rect = QRect(*saved)
-        if any(s.availableGeometry().intersects(rect) for s in QGuiApplication.screens()):
-            self.setGeometry(rect)
+        matching = [s for s in QGuiApplication.screens() if s.availableGeometry().intersects(rect)]
+        if matching:
+            def intersection_area(screen):
+                intersection = screen.availableGeometry().intersected(rect)
+                return intersection.width() * intersection.height()
+
+            screen = max(matching, key=intersection_area)
+            fit_to_screen(self, rect.width(), rect.height(), screen=screen)
+            available = screen.availableGeometry()
+            self.move(
+                max(available.left() + 8, min(rect.x(), available.right() - self.width() - 7)),
+                max(available.top() + 8, min(rect.y(), available.bottom() - self.height() - 31)),
+            )
 
     def closeEvent(self, event: QCloseEvent) -> None:  # Qt API casing
         self._settings.general.window_geometry = [self.x(), self.y(), self.width(), self.height()]

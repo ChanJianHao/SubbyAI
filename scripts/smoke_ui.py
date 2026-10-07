@@ -70,6 +70,7 @@ def main() -> int:
         overlay = CaptionOverlay(store.settings)
         shell.show()
         QTest.qWait(100)
+        assert shell.screen().availableGeometry().contains(shell.frameGeometry())
         for mode in ("dark", "light"):
             theme.apply(app, mode, reduce_motion=False)
             policy()._system = False  # Exercise motion even on a reduced-motion test host.
@@ -140,6 +141,7 @@ def main() -> int:
             assert wizard.current_index == index
             QTest.qWait(35)
         QTest.qWait(260)
+        assert wizard.screen().availableGeometry().contains(wizard.frameGeometry())
         wizard.grab().save(str(args.output / "onboarding.png"))
         wizard.close()
         shell.show_segment(0)

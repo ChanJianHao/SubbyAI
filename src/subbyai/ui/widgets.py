@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QScreen
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -511,7 +511,9 @@ def wrap_label(label: QLabel) -> QLabel:
     return label
 
 
-def fit_to_screen(window: QWidget, width: int, height: int) -> None:
+def fit_to_screen(
+    window: QWidget, width: int, height: int, *, screen: QScreen | None = None
+) -> None:
     """Open a window at its intended size, honouring content and the screen.
 
     Three rules, in order: never smaller than the content needs (otherwise
@@ -525,11 +527,22 @@ def fit_to_screen(window: QWidget, width: int, height: int) -> None:
     width = max(width, needed.width())
     height = max(height, needed.height())
 
-    screen = window.screen() or QGuiApplication.primaryScreen()
+    screen = screen or window.screen() or QGuiApplication.primaryScreen()
     if screen is not None:
         available = screen.availableGeometry()
-        width = min(width, int(available.width() * 0.95))
-        height = min(height, int(available.height() * 0.95))
+        width_limit = max(1, int(available.width() * 0.95))
+        # At high display scaling a 1080p desktop can have fewer than 420
+        # logical pixels vertically. Scrollable windows can fit, but their
+        # usual resize minimum otherwise overrides the screen-aware resize.
+        # Leave room for the native title bar as well as the window content.
+        height_limit = max(1, available.height() - max(40, int(available.height() * 0.05)))
+        minimum = window.minimumSize()
+        window.setMinimumSize(
+            min(minimum.width(), max(needed.width(), width_limit)),
+            min(minimum.height(), max(needed.height(), height_limit)),
+        )
+        width = min(width, width_limit)
+        height = min(height, height_limit)
     window.resize(width, height)
 
 

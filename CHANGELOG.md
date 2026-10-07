@@ -4,6 +4,10 @@
 
 First SubbyAI release.
 
+- Screen-aware main and setup window minimums keep controls on the desktop
+  at high display scaling, with room for the native Windows title bar.
+- Native popup feedback survives collection, handles reentrant show events,
+  and releases its controller when the popup is destroyed.
 - Interruptible page transitions, sliding settings and transcript panels,
   animated switches, tab indicators, focus rings and press feedback.
 - Responsive Mochi expressions, smooth audio meters and progress, bounded busy

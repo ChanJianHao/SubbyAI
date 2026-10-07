@@ -217,3 +217,51 @@ def test_download_feedback_never_overlaps_and_stop_stays_visible(surfaces, qt_ap
         live.download_message.mapTo(live, live.download_message.rect().center())
     )
     theme.apply(qt_app, "dark", reduce_motion=False)
+
+
+@pytest.mark.parametrize("name", ["shell", "wizard"])
+def test_high_display_scaling_keeps_window_and_controls_on_screen(
+    surfaces, qt_app, monkeypatch, name
+):
+    from PySide6.QtCore import QRect
+
+    from subbyai.ui.widgets import fit_to_screen
+
+    class SmallLogicalScreen:
+        def availableGeometry(self):
+            return QRect(0, 0, 768, 408)
+
+    window = surfaces[name]
+    monkeypatch.setattr(window, "screen", lambda: SmallLogicalScreen())
+    fit_to_screen(window, 880, 620)
+    window.show()
+    qt_app.processEvents()
+    assert window.width() <= 768
+    assert window.height() <= 368  # Native title bar also fits in the work area.
+    if name == "shell":
+        start = surfaces["live"].start_button
+        assert window.rect().contains(start.mapTo(window, start.rect().center()))
+    else:
+        assert window._primary.isVisible()
+        assert window.rect().contains(
+            window._primary.mapTo(window, window._primary.rect().center())
+        )
+
+
+def test_saved_window_fits_a_desktop_after_resolution_or_scaling_changes(
+    surfaces, qt_app, monkeypatch
+):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QGuiApplication
+
+    class SmallLogicalScreen:
+        def availableGeometry(self):
+            return QRect(0, 0, 768, 408)
+
+    window = surfaces["shell"]
+    window._settings.general.window_geometry = [750, 390, 1000, 700]
+    monkeypatch.setattr(QGuiApplication, "screens", lambda: [SmallLogicalScreen()])
+    window._restore_geometry()
+    window.show()
+    qt_app.processEvents()
+    assert QRect(0, 0, 768, 408).contains(window.frameGeometry())

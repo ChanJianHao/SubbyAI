@@ -21,6 +21,63 @@ from subbyai.ui.transcript_model import TranscriptModel
 from subbyai.ui.widgets import Toast
 
 
+def test_native_popup_feedback_survives_collection_and_releases_on_destruction(qt_app):
+    import gc
+    import weakref
+
+    from PySide6.QtWidgets import QComboBox
+
+    from subbyai.ui.motion import install
+
+    install(qt_app)
+    combo = QComboBox()
+    combo.addItems(["System sound", "Microphone"])
+    combo.show()
+    combo.showPopup()
+    qt_app.processEvents()
+    popup = combo.view().window()
+    key = id(popup)
+    feedback = weakref.ref(popup._window_entrance)
+    del popup
+    gc.collect()
+    assert feedback() is not None
+    assert feedback().tween.animation is not None
+    combo.hidePopup()
+    combo.showPopup()
+    qt_app.processEvents()
+    combo.hidePopup()
+    combo.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qt_app.processEvents()
+    assert key not in qt_app._feedback_installer._windows
+
+
+def test_popup_feedback_creation_tolerates_reentrant_show(qt_app, monkeypatch):
+    from PySide6.QtWidgets import QMenu
+
+    from subbyai.ui import motion
+
+    motion.install(qt_app)
+    original = motion._WindowEntrance
+    calls = []
+
+    def construct(widget):
+        calls.append(widget)
+        QCoreApplication.sendEvent(widget, QEvent(QEvent.Type.Show))
+        return original(widget)
+
+    monkeypatch.setattr(motion, "_WindowEntrance", construct)
+    menu = QMenu()
+    menu.addAction("Start captions")
+    menu.show()
+    qt_app.processEvents()
+    assert calls == [menu]
+    assert menu._window_entrance.tween.animation is not None
+    menu.close()
+    menu.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture(autouse=True)
 def motion_enabled(qt_app, monkeypatch):
     controller = policy()

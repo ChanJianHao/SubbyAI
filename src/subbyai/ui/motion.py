@@ -454,20 +454,47 @@ class _WindowEntrance(QObject):
 
 
 class _FeedbackInstaller(QObject):
+    def __init__(self, parent: QObject):
+        super().__init__(parent)
+        # Native popup wrappers can be temporary. Retain their Python feedback
+        # until Qt destroys the widget, and mark construction before callbacks
+        # can deliver another Show event.
+        self._controls: dict[int, InteractionFeedback | None] = {}
+        self._windows: dict[int, _WindowEntrance | None] = {}
+
+    @staticmethod
+    def _retain(widget, controllers, factory):
+        key = id(widget)
+        if key in controllers:
+            return controllers[key]
+        controllers[key] = None
+        try:
+            controller = factory(widget)
+            controllers[key] = controller
+            widget.destroyed.connect(
+                lambda _object=None, key=key: controllers.pop(key, None)
+            )
+            return controller
+        except Exception:
+            controllers.pop(key, None)
+            raise
+
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.Show:
             try:
                 if isinstance(watched, QAbstractButton):
-                    interactive(watched)
+                    self._retain(watched, self._controls, interactive)
                 elif (
                     isinstance(watched, (QMenu, QDialog))
                     or (
                         isinstance(watched, QWidget)
                         and watched.windowType() in (Qt.WindowType.Popup, Qt.WindowType.ToolTip)
                     )
-                ) and not hasattr(watched, "_window_entrance"):
-                    watched._window_entrance = _WindowEntrance(watched)
-                    watched._window_entrance.eventFilter(watched, event)
+                ) and id(watched) not in self._windows:
+                    entrance = self._retain(watched, self._windows, _WindowEntrance)
+                    if entrance is not None:
+                        watched._window_entrance = entrance
+                        entrance.eventFilter(watched, event)
             except (RuntimeError, AttributeError):
                 log.debug("Decorative feedback unavailable", exc_info=True)
         return False
