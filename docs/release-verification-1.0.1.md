@@ -59,6 +59,10 @@ button cycles before publishing or closing the issue; results belong in the rele
   value; require available weak evidence before blacklisting ordinary dialogue.
 - A successful process launch was insufficient package proof. The verifier now requires the
   diagnostic completion marker and can require an exact clean embedded Git revision.
+- The setup displayed 1.0.1 while its compiled fixed file/product versions remained 0.0.0.0.
+  A native PE resource check reproduced the mismatch. Inno defaults those binary fields to zero;
+  derive both from the release version and make every installer build verify the compiled installer
+  and executable resources. Regression cases reject missing, old and inconsistent binary metadata.
 
 ## Objective accuracy results
 
@@ -120,7 +124,7 @@ every ASR input matched its recorded source slice bit-for-bit. Trace drops were 
 
 - Fresh environment synchronized from the lockfile with Python 3.13.16 and all production/GPU
   dependencies. The 1.0.1 lock change updates only the project's version, not dependency versions.
-- Final full suite: **862 passed**, 297.65 seconds. Five failing reproductions cover the last
+- Final full suite: **867 passed**, 295.17 seconds. Five failing reproductions cover the last
   absent-confidence fix; an additional test preserves explicit user phrase exclusions as a
   separate policy. No tests were disabled or newly skipped. Ruff,
   Python compilation and version consistency passed. No separate type checker is configured.

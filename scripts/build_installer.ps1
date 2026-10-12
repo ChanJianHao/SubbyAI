@@ -43,6 +43,7 @@ if (-not (Test-SubbyPublisher $subbyCompiler)) {
 $subbyVersion = & $PythonExecutable -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
 if ($LASTEXITCODE -ne 0) { throw 'Could not read the application version.' }
 $subbyDefines = @('/Qp', "/DAppVersion=$subbyVersion")
+$subbyAppPath = Join-Path $subbyRoot 'dist/SubbyAI'
 if ($AppDirectory) {
     $subbyAppPath = (Resolve-Path -LiteralPath $AppDirectory).Path
     if (-not (Test-Path -LiteralPath (Join-Path $subbyAppPath 'SubbyAI.exe'))) {
@@ -50,6 +51,7 @@ if ($AppDirectory) {
     }
     $subbyDefines += "/DAppSourceDir=$subbyAppPath"
 }
+$subbyOutputPath = Join-Path $subbyRoot 'dist'
 if ($OutputDirectory) {
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     $subbyOutputPath = (Resolve-Path -LiteralPath $OutputDirectory).Path
@@ -57,3 +59,7 @@ if ($OutputDirectory) {
 }
 & $subbyCompiler @subbyDefines 'packaging/windows/installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Windows installer compilation failed.' }
+& $PythonExecutable 'scripts/check_release_version.py' `
+    --windows-executable (Join-Path $subbyAppPath 'SubbyAI.exe') `
+    --windows-installer (Join-Path $subbyOutputPath "SubbyAI-Setup-$subbyVersion.exe")
+if ($LASTEXITCODE -ne 0) { throw 'Compiled Windows release version metadata is inconsistent.' }

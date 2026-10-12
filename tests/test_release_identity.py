@@ -47,3 +47,41 @@ def test_package_verification_requires_matching_clean_revision_and_completion(
         "verify_package", "--executable", "candidate.exe", "--expected-commit", "a" * 40,
     ])
     assert module.main() == expected
+
+
+@pytest.mark.parametrize("file_version,product_version,passes", [
+    ((1, 0, 1, 0), (1, 0, 1, 0), True),
+    ((0, 0, 0, 0), (1, 0, 1, 0), False),
+    ((1, 0, 1, 0), (0, 0, 0, 0), False),
+    ((1, 0, 0, 0), (1, 0, 0, 0), False),
+])
+def test_release_gate_checks_both_binary_versions(
+    monkeypatch, file_version, product_version, passes,
+):
+    path = Path(__file__).resolve().parents[1] / "scripts/check_release_version.py"
+    spec = importlib.util.spec_from_file_location("check_release_version", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module, "read_windows_versions", lambda path: (file_version, product_version),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "check_release_version", "--windows-installer", "candidate.exe",
+    ])
+    assert module.main() == (0 if passes else 1)
+
+
+def test_release_gate_rejects_missing_compiled_version_resource(monkeypatch):
+    path = Path(__file__).resolve().parents[1] / "scripts/check_release_version.py"
+    spec = importlib.util.spec_from_file_location("check_release_version", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def absent(path):
+        raise ValueError("Missing version resource")
+
+    monkeypatch.setattr(module, "read_windows_versions", absent)
+    monkeypatch.setattr(sys, "argv", [
+        "check_release_version", "--windows-installer", "candidate.exe",
+    ])
+    assert module.main() == 1
