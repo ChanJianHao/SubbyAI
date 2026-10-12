@@ -385,6 +385,39 @@ def test_storage_warning_survives_healthy_audio(controller):
     assert "couldn't be saved" in controller.live.history_warning._text.text()
 
 
+def test_failed_history_retry_warns_again_without_consuming_prior_write_loss(
+    controller, monkeypatch, qt_app,
+):
+    import contextlib
+    import sqlite3
+    import time
+
+    from PySide6.QtTest import QTest
+
+    from subbyai.storage.session_store import HistoryWriteError
+
+    @contextlib.contextmanager
+    def unavailable():
+        raise sqlite3.OperationalError("Storage unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(controller.sessions, "_connect", unavailable)
+    controller.settings.history.enabled = True
+    for _ in range(2):
+        controller._end_session()
+        controller._start_history()
+        owner = controller._session_id
+        deadline = time.monotonic() + 3
+        while not owner.failed and time.monotonic() < deadline:
+            QTest.qWait(10)
+        qt_app.processEvents()
+        assert owner.failed
+        assert not controller.live.history_warning.isHidden()
+    # Warning delivery/retry must not acknowledge away the real write failure.
+    with pytest.raises(HistoryWriteError):
+        controller.sessions.flush()
+
+
 def test_unrelated_device_changes_do_not_interrupt_capture(controller, monkeypatch):
     from dataclasses import replace
 

@@ -49,6 +49,10 @@ button cycles before publishing or closing the issue; results belong in the rele
 - Late translation corrections could cross an opt-in history policy change. Bound event ownership
   to its original session and ignore late storage updates belonging to a different session. FIFO
   lifecycle tests also verify failed creation, transaction rollback and recovery without mixing rows.
+- Repeated failed history starts could hide the warning because write-loss tracking also coalesced
+  notifications for the whole process. A failing retry test reproduced it without an intervening
+  flush. Keep loss acknowledgment separate from notification coalescing; retries warn again while
+  the flush gate still reports all earlier failed writes.
 - Quit ignored queued final recognition results before closing history. Join producers, process their
   queued final results without reopening UI, then finalize and flush storage off the GUI. A real
   threaded Quit regression verifies final buffered speech and process shutdown cancellation.
@@ -124,7 +128,7 @@ every ASR input matched its recorded source slice bit-for-bit. Trace drops were 
 
 - Fresh environment synchronized from the lockfile with Python 3.13.16 and all production/GPU
   dependencies. The 1.0.1 lock change updates only the project's version, not dependency versions.
-- Final full suite: **867 passed**, 295.17 seconds. Five failing reproductions cover the last
+- Final full suite: **868 passed**, 294.73 seconds. Five failing reproductions cover the last
   absent-confidence fix; an additional test preserves explicit user phrase exclusions as a
   separate policy. No tests were disabled or newly skipped. Ruff,
   Python compilation and version consistency passed. No separate type checker is configured.

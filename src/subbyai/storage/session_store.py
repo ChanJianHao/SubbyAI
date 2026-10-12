@@ -123,6 +123,7 @@ class SessionStore:
         self._queue: queue.Queue[object] = queue.Queue(maxsize=512)
         self.dropped_writes = 0
         self._failure_pending = False
+        self._failure_notice_pending = False
         self._failure_lock = threading.Lock()
         self._on_write_failure = on_write_failure
         self._on_ready = on_ready
@@ -226,6 +227,10 @@ class SessionStore:
         self, title: str, source_language: str = "", target_language: str = ""
     ) -> SessionRef:
         """Queue creation before subsequent writes without touching disk on the caller."""
+        with self._failure_lock:
+            # A retry needs fresh UI feedback. Keep actual loss pending until
+            # a flush acknowledges it; notification coalescing is independent.
+            self._failure_notice_pending = False
         ref = SessionRef()
         if not self._enqueue(_CreateSession(
             ref, title, source_language, target_language, time.time(),
@@ -603,8 +608,9 @@ class SessionStore:
     def _report_loss(self, count: int) -> None:
         with self._failure_lock:
             self.dropped_writes += count
-            notify = not self._failure_pending
+            notify = not self._failure_notice_pending
             self._failure_pending = True
+            self._failure_notice_pending = True
         log.warning("History storage could not save %d write(s)", count)
         if notify and self._on_write_failure is not None:
             try:
@@ -616,6 +622,7 @@ class SessionStore:
         with self._failure_lock:
             failed = self._failure_pending
             self._failure_pending = False
+            self._failure_notice_pending = False
             return failed
 
 
