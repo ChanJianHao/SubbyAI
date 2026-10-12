@@ -1,8 +1,28 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def wait_for_ui(qt_app):
+    """Wait for an observable UI result, including queued worker delivery.
+
+    A worker flag or elapsed timer interval does not establish that Qt has
+    delivered the corresponding callback. Keep the wait bounded and assert
+    the actual result rather than increasing arbitrary sleeps.
+    """
+    from PySide6.QtTest import QTest
+
+    def wait(predicate, timeout_ms=2000):
+        deadline = time.monotonic() + timeout_ms / 1000
+        while not predicate() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert predicate(), "UI result did not arrive before the bounded deadline"
+
+    return wait
 
 # Headless Qt for CI and local runs.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

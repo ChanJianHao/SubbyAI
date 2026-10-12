@@ -165,18 +165,17 @@ def test_remote_initialization_failure_leaves_a_retryable_state(controller, qt_a
     assert controller.live.start_button.isEnabled()
 
 
-def test_language_changes_reconnect_with_updated_runtime_config(controller, qt_app):
-    from PySide6.QtTest import QTest
-
+def test_language_changes_reconnect_with_updated_runtime_config(controller, wait_for_ui):
     controller._begin_session()
     controller.settings_view.languages.hear.choose("ja")
     assert controller._pending_restart
     controller._on_stopped()
-    QTest.qWait(130)
+    wait_for_ui(lambda: controller.captioner.started == 2)
     assert controller.captioner.last_config.source_language == "ja"
     controller.settings_view.languages.hear.choose("")
+    assert controller._pending_restart
     controller._on_stopped()
-    QTest.qWait(130)
+    wait_for_ui(lambda: controller.captioner.started == 3)
     assert controller.captioner.last_config.source_language == ""
 
 
@@ -386,13 +385,10 @@ def test_storage_warning_survives_healthy_audio(controller):
 
 
 def test_failed_history_retry_warns_again_without_consuming_prior_write_loss(
-    controller, monkeypatch, qt_app,
+    controller, monkeypatch, wait_for_ui,
 ):
     import contextlib
     import sqlite3
-    import time
-
-    from PySide6.QtTest import QTest
 
     from subbyai.storage.session_store import HistoryWriteError
 
@@ -407,10 +403,9 @@ def test_failed_history_retry_warns_again_without_consuming_prior_write_loss(
         controller._end_session()
         controller._start_history()
         owner = controller._session_id
-        deadline = time.monotonic() + 3
-        while not owner.failed and time.monotonic() < deadline:
-            QTest.qWait(10)
-        qt_app.processEvents()
+        wait_for_ui(
+            lambda owner=owner: owner.failed and not controller.live.history_warning.isHidden()
+        )
         assert owner.failed
         assert not controller.live.history_warning.isHidden()
     # Warning delivery/retry must not acknowledge away the real write failure.

@@ -142,7 +142,7 @@ def test_reveal_reverses_and_disables_exiting_actions(qt_app):
     assert button.graphicsEffect().opacity() == 1.0
 
 
-def test_expandable_reverses_without_leaving_clipped_content(qt_app):
+def test_expandable_reverses_without_leaving_clipped_content(qt_app, wait_for_ui):
     host = QWidget()
     layout = QVBoxLayout(host)
     content = QPushButton("Advanced controls")
@@ -153,11 +153,11 @@ def test_expandable_reverses_without_leaving_clipped_content(qt_app):
     panel.set_expanded(False)
     assert not content.isEnabled()
     panel.set_expanded(True)
-    QTest.qWait(280)
+    wait_for_ui(lambda: panel._height.animation.state() == QAbstractAnimation.State.Stopped)
     assert panel.isVisible() and content.isEnabled()
     assert panel.maximumHeight() == 16777215
     panel.set_expanded(False)
-    QTest.qWait(280)
+    wait_for_ui(panel.isHidden)
     assert panel.isHidden()
     panel.set_expanded(True)
     assert panel._height.animation.state() == QAbstractAnimation.State.Running

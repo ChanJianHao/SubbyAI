@@ -10,6 +10,8 @@ import pytest
 from subbyai import branding
 from subbyai.build_info import get_build_info
 
+CURRENT_WINDOWS_VERSION = (*map(int, branding.VERSION.split(".")), 0)
+
 
 def test_build_identity_distinguishes_clean_revision_from_missing_metadata(monkeypatch):
     metadata = SimpleNamespace(
@@ -50,9 +52,9 @@ def test_package_verification_requires_matching_clean_revision_and_completion(
 
 
 @pytest.mark.parametrize("file_version,product_version,passes", [
-    ((1, 0, 1, 0), (1, 0, 1, 0), True),
-    ((0, 0, 0, 0), (1, 0, 1, 0), False),
-    ((1, 0, 1, 0), (0, 0, 0, 0), False),
+    (CURRENT_WINDOWS_VERSION, CURRENT_WINDOWS_VERSION, True),
+    ((0, 0, 0, 0), CURRENT_WINDOWS_VERSION, False),
+    (CURRENT_WINDOWS_VERSION, (0, 0, 0, 0), False),
     ((1, 0, 0, 0), (1, 0, 0, 0), False),
 ])
 def test_release_gate_checks_both_binary_versions(

@@ -1,7 +1,7 @@
 ![SubbyAI — Your world, subtitled. Live subtitles for anime, dramas and games.](docs/images/hero.png)
 
 <p align="center">
-  <a href="https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-Setup-1.0.1.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.2/SubbyAI-Setup-1.0.2.exe"><strong>Download for Windows</strong></a>
   · <a href="https://github.com/ChanJianHao/SubbyAI/releases">All downloads</a>
   · <a href="docs/installation-windows.md">Getting started</a>
 </p>
@@ -16,7 +16,7 @@ for conversations, lectures, interviews and language practice.
 Local speech recognition and translation are the defaults. No account, subscription
 or API key is needed for local use. Download your models once, then watch offline.
 
-> **Windows V1.0.1 · Free & open source · No account needed.** The Windows build
+> **Windows V1.0.2 · Free & open source · No account needed.** The Windows build
 > is unsigned, so SmartScreen may ask you to confirm the download. See the
 > [installation guide](docs/installation-windows.md). macOS is supported from source;
 > packaged macOS downloads require separate platform validation.
@@ -25,8 +25,8 @@ or API key is needed for local use. Download your models once, then watch offlin
 
 ## Start watching
 
-1. Get the [Windows installer](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-Setup-1.0.1.exe)
-   or [portable ZIP](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-portable-win-x64.zip).
+1. Get the [Windows installer](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.2/SubbyAI-Setup-1.0.2.exe)
+   or [portable ZIP](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.2/SubbyAI-portable-win-x64.zip).
 2. Open SubbyAI. Setup recommends a model for your computer and lets you test the audio meter.
 3. Choose **System audio** for playback or **Microphone** for conversations and lectures,
    then choose the language you'll hear and your subtitle language.
@@ -147,7 +147,7 @@ test instructions are in [development](docs/development.md).
 [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) ·
 [Architecture](docs/architecture.md) · [Release process](docs/release.md) ·
 [Accuracy investigation and evaluation](docs/accuracy-investigation.md) ·
-[1.0.1 verification](docs/release-verification-1.0.1.md) ·
+[1.0.2 verification](docs/release-verification-1.0.2.md) ·
 [V1 release notes](docs/release-notes-v1.0.0.md) · [Contributing](CONTRIBUTING.md)
 
 SubbyAI is [MIT licensed](LICENSE). Dependency, model and artwork

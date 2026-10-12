@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import threading
 
 import pytest
@@ -280,7 +279,13 @@ def test_audio_check_reports_that_it_can_hear(make_wizard):
     assert step._status.text() == "We can hear it. You're set."
 
 
-def test_audio_check_names_the_silence_and_offers_a_device(make_wizard):
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_audio_check_names_the_silence_and_offers_a_device(make_wizard, monkeypatch, platform):
+    from types import SimpleNamespace
+
+    from subbyai.ui import onboarding_hardware
+
+    monkeypatch.setattr(onboarding_hardware, "sys", SimpleNamespace(platform=platform))
     class FakeDevice:
         source = "system"
 
@@ -295,15 +300,33 @@ def test_audio_check_names_the_silence_and_offers_a_device(make_wizard):
 
     step._report_silence()
 
-    if sys.platform == "darwin":
-        assert "permission" in step._status.text()
+    if platform == "darwin":
+        assert "loopback input" in step._status.text()
+        assert "BlackHole" in step._status.text()
+        assert "Microphone" in step._status.text()
     else:
         assert "Nothing yet" in step._status.text()
-        assert step._picker.isVisibleTo(step)
+    assert step._picker.isVisibleTo(step)
 
     step._pick_device(0)
     assert settings.audio.device_id == "dev-1"
     assert settings.audio.device_name == "Speakers"
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_microphone_silence_offers_permission_recovery(make_wizard, monkeypatch, platform):
+    from types import SimpleNamespace
+
+    from subbyai.ui import onboarding_hardware
+
+    monkeypatch.setattr(onboarding_hardware, "sys", SimpleNamespace(platform=platform))
+    settings = Settings()
+    settings.audio.source = "microphone"
+    step = make_wizard(settings)._audio
+    step._report_silence()
+    assert "selected microphone" in step._status.text()
+    assert "permissions" in step._status.text()
+    assert "BlackHole" not in step._status.text()
 
 
 def test_capability_is_detected_off_the_ui_thread(qt_app, monkeypatch):
