@@ -2,7 +2,9 @@
 
 import io
 import json
+import math
 import time
+import unicodedata
 import wave
 
 import httpx
@@ -10,11 +12,12 @@ import numpy as np
 
 from ..core.network import read_response, validate_endpoint
 from ..core.settings import ProcessingSettings
-from .engine import EngineError, Transcript
+from .engine import EngineError, Transcript, WordSpan
 
 
 class RemoteASR:
     session_scoped = True
+    supports_context = True
 
     def __init__(self, config: ProcessingSettings, api_key: str | None = None, transport=None):
         self.config = config
@@ -37,15 +40,16 @@ class RemoteASR:
     def load(self) -> None:
         pass  # Never upload test audio merely to probe a connection.
 
-    def transcribe(self, audio, language=None, vocabulary="") -> Transcript:
+    def transcribe(self, audio, language=None, vocabulary="", *, context="") -> Transcript:
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)
         if audio.size > 16000 * 20:
             raise EngineError("This audio phrase exceeds the remote processing limit.")
         data = {"model": self.config.model, "response_format": "verbose_json"}
         if language:
             data["language"] = language
-        if vocabulary:
-            data["prompt"] = vocabulary[:400]
+        prompt = " ".join(filter(None, [vocabulary[:400], context[-600:]]))
+        if prompt:
+            data["prompt"] = prompt
         payload = pcm_wav(audio)
         for attempt in range(self.config.retries + 1):
             try:
@@ -85,12 +89,15 @@ class RemoteASR:
                 detected = codes.get(str(detected).casefold(), detected)
                 if detected not in LANGUAGES:
                     detected = language
+                text = body["text"].strip()[:16000]
+                duration = audio.size / 16000
                 return Transcript(
-                    text=body["text"].strip()[:16000],
+                    text=text,
                     language=detected,
                     confidence_known=False,
                     speech_probability=1.0,
-                    duration=audio.size / 16000,
+                    duration=duration,
+                    words=_aligned_words(body.get("words"), text, duration),
                 )
             except (httpx.HTTPError, ValueError) as exc:
                 # Ambiguous failed POSTs are not replayed: the provider may have
@@ -116,3 +123,39 @@ def pcm_wav(audio: np.ndarray) -> bytes:
         clean = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
         output.writeframes((np.clip(clean, -1, 1) * 32767).astype("<i2").tobytes())
     return buffer.getvalue()
+
+
+def _aligned_words(value, text: str, duration: float) -> tuple[WordSpan, ...]:
+    """Use optional alignment only when it covers the complete valid reply.
+
+    Partial or malformed word lists would make timestamp stitching silently
+    replace good reply text with the remaining subset. Fall back to textual
+    reconciliation as a unit; never discard source words to salvage metadata.
+    """
+    if not isinstance(value, list):
+        return ()
+    words = []
+    for word in value:
+        if (
+            not isinstance(word, dict)
+            or not isinstance(word.get("word"), str)
+            or type(word.get("start")) not in (int, float)
+            or type(word.get("end")) not in (int, float)
+        ):
+            return ()
+        try:
+            start, end = float(word["start"]), float(word["end"])
+        except OverflowError:
+            return ()
+        if (
+            not math.isfinite(start) or not math.isfinite(end)
+            or not 0 <= start <= end <= duration + 0.2
+            or (words and start < words[-1].start)
+        ):
+            return ()
+        words.append(WordSpan(word["word"], start, end))
+
+    def lexical(value):
+        return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
+
+    return tuple(words) if lexical("".join(w.text for w in words)) == lexical(text) else ()

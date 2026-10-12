@@ -53,17 +53,18 @@ def speech_shaped(seconds: float) -> np.ndarray:
 
 
 def load_audio(path: Path, seconds: float) -> np.ndarray:
-    import wave
+    from evaluate_accuracy import load_source
 
-    with wave.open(str(path), "rb") as handle:
-        frames = handle.readframes(handle.getnframes())
-        raw = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        if handle.getnchannels() > 1:
-            raw = raw.reshape(-1, handle.getnchannels()).mean(axis=1)
+    from subbyai.audio.processing import to_mono_16k
+
+    source, rate = load_source(path)
+    raw = to_mono_16k(source, rate)
     wanted = int(seconds * SAMPLE_RATE)
-    if len(raw) >= wanted:
-        return raw[:wanted]
-    return np.tile(raw, int(np.ceil(wanted / len(raw))))[:wanted]
+    if len(raw) < wanted:
+        raise ValueError(
+            "Speech file is shorter than the requested benchmark; choose shorter lengths"
+        )
+    return raw[:wanted]
 
 
 def rss_mb() -> float:

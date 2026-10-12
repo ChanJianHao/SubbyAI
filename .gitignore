@@ -19,6 +19,7 @@ config.ini
 *.mp3
 *.flac
 recordings/
+accuracy-traces/
 models/
 translation-cache/
 

@@ -69,6 +69,12 @@ class SearchHit:
     translation: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _RemoveSegment:
+    session_id: int
+    event_id: int
+
+
 class SessionStore:
     """Thread-safe store with a background writer.
 
@@ -289,6 +295,13 @@ class SessionStore:
         """Upsert by session and event id, including updates ahead of a batch flush."""
         self.add_segment(session_id, segment)
 
+    def remove_segment(self, session_id: int, event_id: int) -> None:
+        """Retract a superseded event in order with already queued writes."""
+        try:
+            self._queue.put_nowait(_RemoveSegment(session_id, event_id))
+        except queue.Full:
+            self._report_loss(1)
+
     def segments(self, session_id: int) -> list[CaptionSegment]:
         if not self._initialized:
             return []
@@ -391,7 +404,7 @@ class SessionStore:
     # ---------- writer ----------
 
     def _writer_loop(self) -> None:
-        pending: list[tuple[int, CaptionSegment]] = []
+        pending: list[tuple[int, CaptionSegment] | _RemoveSegment] = []
         last_commit = time.monotonic()
         while True:
             timeout = max(0.05, self._flush_interval - (time.monotonic() - last_commit))
@@ -432,35 +445,37 @@ class SessionStore:
                 pending.append(item)
         self._commit(pending)
 
-    def _commit(self, pending: list[tuple[int, CaptionSegment]]) -> None:
+    def _commit(self, pending: list[tuple[int, CaptionSegment] | _RemoveSegment]) -> None:
         if not pending:
             return
-        rows = [
-            (
-                session_id,
-                seg.id,
-                seg.audio_start,
-                seg.audio_duration,
-                seg.created_at,
-                seg.text,
-                seg.translation if seg.translation_state is TranslationState.DONE else None,
-                seg.language,
-                seg.confidence,
-            )
-            for session_id, seg in pending
-        ]
         try:
             with self._lock, self._connect() as conn:
-                conn.executemany(
-                    "INSERT INTO segments (session_id, event_id, audio_start, audio_duration,"
-                    " created_at,"
-                    " text, translation, language, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT(session_id, event_id) DO UPDATE SET "
-                    "translation=excluded.translation",
-                    rows,
-                )
+                for item in pending:
+                    if isinstance(item, _RemoveSegment):
+                        conn.execute(
+                            "DELETE FROM segments WHERE session_id = ? AND event_id = ?",
+                            (item.session_id, item.event_id),
+                        )
+                        continue
+                    session_id, seg = item
+                    conn.execute(
+                        "INSERT INTO segments (session_id, event_id, audio_start, audio_duration,"
+                        " created_at, text, translation, language, confidence)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT(session_id, event_id) DO UPDATE SET "
+                        "audio_start=excluded.audio_start, audio_duration=excluded.audio_duration,"
+                        "text=excluded.text, translation=excluded.translation,"
+                        "language=excluded.language, confidence=excluded.confidence",
+                        (
+                            session_id, seg.id, seg.audio_start, seg.audio_duration,
+                            seg.created_at, seg.text,
+                            seg.translation
+                            if seg.translation_state is TranslationState.DONE else None,
+                            seg.language, seg.confidence,
+                        ),
+                    )
         except (sqlite3.Error, OSError):
-            self._report_loss(len(rows))
+            self._report_loss(len(pending))
 
     def _report_loss(self, count: int) -> None:
         with self._failure_lock:

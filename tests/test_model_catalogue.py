@@ -155,7 +155,7 @@ def test_the_model_in_use_cannot_be_removed(sheet):
     widget, _ = sheet
     active = widget.rows["small"]
     assert active.remove_button.isVisibleTo(widget) is False
-    assert "in use" in active._name.text()
+    assert "Active" in active._name.text()
 
 
 def test_the_sheet_says_what_the_engines_are_costing(sheet):

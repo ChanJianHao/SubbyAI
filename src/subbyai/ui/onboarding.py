@@ -13,7 +13,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
-    QGridLayout,
+    QHBoxLayout,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -201,27 +201,34 @@ class OnboardingWizard(QDialog):
         self._scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         root.addWidget(self._scroller, 1)
 
-        footer = QGridLayout()
-        footer.setColumnStretch(0, 1)
-        footer.setColumnStretch(2, 1)
+        # Keep all navigation in a single row. An aligned nested grid took its
+        # height from the quiet secondary button (30px), squeezing the primary
+        # button's 43px style box and clipping the label at Windows 125% DPI.
+        footer = QHBoxLayout()
         self._back = QPushButton("Back")
         self._back.setObjectName("quiet")
         self._back.clicked.connect(self._go_back)
-        footer.addWidget(self._back, 0, 0, Qt.AlignmentFlag.AlignLeft)
+        footer.addWidget(self._back)
+        footer.addStretch()
         self._dots = ProgressDots(len(self._steps))
-        footer.addWidget(self._dots, 0, 1, Qt.AlignmentFlag.AlignCenter)
+        footer.addWidget(self._dots)
+        footer.addStretch()
 
-        right = QGridLayout()
         self._secondary = QPushButton(f"Open {APP_NAME} first")
         self._secondary.setObjectName("quiet")
         self._secondary.clicked.connect(lambda: self._finish(start_now=False))
         self._primary = QPushButton("Get started")
         self._primary.setObjectName("primary")
-        self._primary.setDefault(True)
+        # Windows paints a rectangular native default-button frame over this
+        # themed round button. Keep Enter navigation at the dialog level so
+        # Qt's native default decoration cannot clip or double its corners.
+        self._primary.setDefault(False)
+        self._primary.setAutoDefault(False)
         self._primary.clicked.connect(self._go_next)
-        right.addWidget(self._secondary, 0, 0)
-        right.addWidget(self._primary, 0, 1)
-        footer.addLayout(right, 0, 2, Qt.AlignmentFlag.AlignRight)
+        # Secondary action has its own row so large text and short screens do
+        # not force both actions and the progress dots into the same width.
+        root.addWidget(self._secondary, 0, Qt.AlignmentFlag.AlignRight)
+        footer.addWidget(self._primary)
         root.addLayout(footer)
 
     def _centre(self) -> None:
@@ -252,6 +259,7 @@ class OnboardingWizard(QDialog):
         self._back.setVisible(index > 0)
         self._secondary.setVisible(last)
         self._primary.setText(step.primary_label)
+        self._primary.setFocus(Qt.FocusReason.OtherFocusReason)
         step.on_enter()
 
     def _go_next(self) -> None:
@@ -319,6 +327,14 @@ class OnboardingWizard(QDialog):
                 probe.finished.connect(lambda: _release_probe(probe))
             else:
                 probe.deleteLater()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._primary.isEnabled():
+                self._primary.click()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
         """QDialog skips ``done`` when it was never shown; setup still counts as run."""

@@ -130,6 +130,40 @@ def test_add_segment_does_not_block_without_writer(store):
 
 
 @pytest.mark.parametrize("background", [False, True])
+def test_event_retraction_keeps_queue_order_and_other_session_data(store, background):
+    if background:
+        store.start_writer()
+    session = store.create_session("Correction")
+    other = store.create_session("Unrelated")
+    original = _seg("superseded words", "superseded translation")
+    store.add_segment(session, original)
+    store.add_segment(other, original)
+    store.remove_segment(session, original.id)
+    store.flush()
+    assert not store.segments(session)
+    assert len(store.segments(other)) == 1
+    assert [hit.session_id for hit in store.search("superseded")] == [other]
+    store.add_segment(session, original)
+    store.flush()
+    assert len(store.segments(session)) == 1
+
+
+def test_corrected_source_and_timing_replace_event_and_search_index(store):
+    from dataclasses import replace
+
+    session = store.create_session("Correction")
+    original = _seg("mistaken name")
+    store.add_segment(session, original)
+    store.update_segment(session, replace(original, text="correct name", audio_duration=3))
+    store.flush()
+    assert len(store.segments(session)) == 1
+    assert store.segments(session)[0].text == "correct name"
+    assert store.segments(session)[0].audio_duration == 3
+    assert not store.search("mistaken")
+    assert len(store.search("correct")) == 1
+
+
+@pytest.mark.parametrize("background", [False, True])
 def test_failed_write_is_reported_and_next_batch_can_recover(store, monkeypatch, background):
     import contextlib
     import sqlite3

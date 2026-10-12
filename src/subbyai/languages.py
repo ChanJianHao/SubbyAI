@@ -98,7 +98,50 @@ def language_code(name: str) -> str:
 
 def sorted_languages() -> list[tuple[str, str]]:
     """(code, name) pairs alphabetical by name, for pickers."""
-    return sorted(LANGUAGES.items(), key=lambda item: item[1])
+    common = ("en", "ja", "ko", "zh", "es", "fr", "de")
+    return [(code, LANGUAGES[code]) for code in common] + sorted(
+        ((code, name) for code, name in LANGUAGES.items() if code not in common),
+        key=lambda item: item[1],
+    )
+
+
+def speech_language_support(model):
+    """Coverage from the curated speech model's metadata; None means multilingual."""
+    if model is None:
+        return None, True
+    if model.languages == "en":
+        return {"en"}, model.detects_language
+    if model.languages == "european":
+        return set(
+            [
+                "bg",
+                "hr",
+                "cs",
+                "da",
+                "nl",
+                "en",
+                "et",
+                "fi",
+                "fr",
+                "de",
+                "el",
+                "hu",
+                "it",
+                "lv",
+                "lt",
+                "mt",
+                "pl",
+                "pt",
+                "ro",
+                "ru",
+                "sk",
+                "sl",
+                "es",
+                "sv",
+                "uk",
+            ]
+        ), model.detects_language
+    return None, model.detects_language
 
 
 def default_target_language() -> str:

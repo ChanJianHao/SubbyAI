@@ -88,6 +88,8 @@ class PairLayout:
     height: float = 0.0
     uncertain: bool = False
     opacity: float = 1.0
+    page_index: int = 0
+    page_count: int = 1
 
 
 class OverlayFonts:
@@ -126,6 +128,7 @@ def build_pair(
     width: float,
     position: OriginalPosition,
     reserve_translation: bool,
+    page: int | None = None,
 ) -> PairLayout:
     """Lay out one caption as an original/translation pair.
 
@@ -135,7 +138,11 @@ def build_pair(
     wants_translation = reserve_translation or seg.translation_state is not TranslationState.NONE
     # Hiding the original is only meaningful when a translation stands in for it.
     # Otherwise the panel would be blank, which is the one thing it may never be.
-    show_original = position is not OriginalPosition.HIDDEN or not wants_translation
+    show_original = (
+        position is not OriginalPosition.HIDDEN
+        or not wants_translation
+        or seg.translation_state is TranslationState.FAILED
+    )
     uncertain = seg.is_uncertain
     # Presets built for reading refuse both signals: dimming spends contrast,
     # and italics are the one type treatment the legibility research is
@@ -143,18 +150,35 @@ def build_pair(
     # least fall back on hearing the audio.
     italic = uncertain and style.uncertain_italic
     fade = style.uncertain_opacity if uncertain else 1.0
+    count = 1
+    if page is not None:
+        for value, role, enabled in (
+            (seg.text, ROLE_ORIGINAL, show_original),
+            (seg.display_translation or "", ROLE_TRANSLATION, wants_translation),
+        ):
+            if enabled and value:
+                font, _ = fonts.for_role(role, italic)
+                count = max(count, -(-len(wrap_lines(value, font, width)) // style.max_lines))
+        page = min(max(0, page), count - 1)
 
     original: list[LineBox] = []
     if show_original:
         original = _lay(
-            seg.text, ROLE_ORIGINAL, style, fonts, width, italic, style.dim_original * fade
+            seg.text,
+            ROLE_ORIGINAL,
+            style,
+            fonts,
+            width,
+            italic,
+            style.dim_original * fade,
+            page=page,
         )
 
     translation: list[LineBox] = []
     if wants_translation:
         text = seg.display_translation
         if text:
-            translation = _lay(text, ROLE_TRANSLATION, style, fonts, width, italic, fade)
+            translation = _lay(text, ROLE_TRANSLATION, style, fonts, width, italic, fade, page=page)
         else:
             translation = [_reserved(ROLE_TRANSLATION, style, fonts, italic)]
 
@@ -162,7 +186,7 @@ def build_pair(
         [translation, original] if position is OriginalPosition.BELOW else [original, translation]
     )
     lines, height = _stack(groups)
-    return PairLayout(seg.id, lines, height, uncertain)
+    return PairLayout(seg.id, lines, height, uncertain, page_index=page or 0, page_count=count)
 
 
 def preview_segments(translation_enabled: bool, wanted: int) -> list[CaptionSegment]:
@@ -215,6 +239,8 @@ def _lay(
     width: float,
     italic: bool,
     opacity: float,
+    *,
+    page: int | None = None,
 ) -> list[LineBox]:
     font, metrics = fonts.for_role(role, italic)
     color = style.translation_color if role == ROLE_TRANSLATION else style.text_color
@@ -222,7 +248,9 @@ def _lay(
     lead = (height - metrics.height()) / 2.0
     boxes: list[LineBox] = []
     wrapped = wrap_lines(text, font, width)
-    if len(wrapped) > style.max_lines:
+    if page is not None:
+        wrapped = wrapped[page * style.max_lines : (page + 1) * style.max_lines]
+    elif len(wrapped) > style.max_lines:
         wrapped = wrapped[: style.max_lines]
         wrapped[-1] = metrics.elidedText(wrapped[-1] + " …", Qt.TextElideMode.ElideRight, width)
     for line in wrapped:

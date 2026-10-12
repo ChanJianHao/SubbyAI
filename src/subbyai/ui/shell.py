@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..branding import APP_FULL_NAME, APP_NAME
+from ..build_info import get_build_info
 from ..core.health import HealthReport, HealthState
 from ..core.settings import Settings
 from . import theme
@@ -76,6 +77,7 @@ class Shell(QMainWindow):
 
         self.stack = MotionStack()
         root.addWidget(self.stack, stretch=1)
+        root.addWidget(self._build_footer())
         self.setCentralWidget(central)
 
         # Sized once the surfaces exist (add_surface) or from the saved
@@ -87,8 +89,24 @@ class Shell(QMainWindow):
 
     def _theme_changed(self, _palette) -> None:
         self.set_health(self._health_report)
+        self.version_label.setFont(theme.ui_font("caption"))
 
     # ---------- construction ----------
+
+    def _build_footer(self) -> QWidget:
+        footer = QWidget()
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(SPACE["lg"], SPACE["xs"], SPACE["lg"], SPACE["sm"])
+        build = get_build_info()
+        self.version_label = QLabel(build.display_text, footer)
+        self.version_label.setObjectName("tertiary")
+        self.version_label.setFont(theme.ui_font("caption"))
+        self.version_label.setAccessibleName("Application version and build date")
+        self.version_label.setToolTip(build.tooltip)
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addStretch(1)
+        layout.addWidget(self.version_label)
+        return footer
 
     def _build_header(self) -> QWidget:
         header = QWidget()
@@ -175,9 +193,41 @@ class Shell(QMainWindow):
 
     # ---------- window lifecycle ----------
 
+    def show_for_user(self) -> None:
+        """Restore a requested window, retaining maximized state and its native handle."""
+        if self._quitting:
+            return
+        log.debug(
+            "Main window Open requested: visible=%s minimized=%s maximized=%s",
+            self.isVisible(), self.isMinimized(), self.isMaximized(),
+        )
+        # show() alone leaves WindowMinimized set. Clearing only that flag also
+        # preserves a maximized window's state when returning from the tray.
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show()
+        native_visible = None
+        if QGuiApplication.platformName() == "windows":
+            from ..system.window_effects import restore_window
+
+            native_visible = restore_window(int(self.winId()))
+            if not native_visible:
+                log.warning("Main window could not be restored to native visibility")
+        self.raise_()
+        self.activateWindow()
+        log.debug(
+            "Main window restored: visible=%s minimized=%s native_visible=%s",
+            self.isVisible(), self.isMinimized(), native_visible,
+        )
+
     def request_quit(self) -> None:
         self._quitting = True
         self.quit_requested.emit()
+
+    def close_for_quit(self) -> None:
+        """Close after shutdown; an explicit Quit must bypass close-to-tray."""
+        self._quitting = True
+        self.close()
 
     def _restore_geometry(self) -> None:
         """Restore size and position, but only onto a screen that still exists."""

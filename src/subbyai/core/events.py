@@ -27,6 +27,13 @@ class TranslationState(StrEnum):
     PENDING = "pending"  # requested, in flight
     DONE = "done"
     FAILED = "failed"  # provider chain exhausted; original still valid
+    GROUPED = "grouped"  # translation of these source words appears on the group's final caption
+
+
+class RecognitionState(StrEnum):
+    PROVISIONAL = "provisional"
+    FINAL = "final"
+    FAILED = "failed"
 
 
 class PrivacyTier(StrEnum):
@@ -77,6 +84,10 @@ class CaptionSegment:
     audio_duration: float = 0.0
     created_at: float = field(default_factory=time.time)
     id: int = field(default_factory=lambda: next(_ids))
+    recognition_state: RecognitionState = RecognitionState.FINAL
+    revision: int = 0
+    translation_group_id: int | None = None
+    context_epoch: int = 0
 
     @property
     def is_uncertain(self) -> bool:
@@ -86,6 +97,8 @@ class CaptionSegment:
         absent signal is not a negative one, and marking everything uncertain
         would make the marking meaningless.
         """
+        if self.recognition_state is not RecognitionState.FINAL:
+            return True
         if not self.confidence_known:
             return False
         return self.confidence < 0.55 or self.speech_probability < 0.5

@@ -32,6 +32,14 @@ class EngineError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class WordSpan:
+    text: str
+    start: float
+    end: float
+    probability: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class Transcript:
     """One decode. The pipeline turns this into a ``CaptionSegment``."""
 
@@ -49,6 +57,8 @@ class Transcript:
     else, and scoring that as "completely unsure" would italicise and dim every
     caption they produce — presenting an absent signal as a negative one.
     """
+
+    words: tuple[WordSpan, ...] = ()
 
 
 def engine_for(model_name: str, device_preference: str = "auto", models: Any = None) -> Any:
@@ -97,6 +107,7 @@ def summarize_segments(segments: Iterable[Any], info: Any) -> Transcript:
     weights: list[float] = []
     probabilities: list[float] = []
     no_speech: list[float] = []
+    words: list[WordSpan] = []
 
     for segment in segments:
         text = str(getattr(segment, "text", "") or "").strip()
@@ -110,6 +121,15 @@ def summarize_segments(segments: Iterable[Any], info: Any) -> Transcript:
         logprob = min(0.0, _as_float(getattr(segment, "avg_logprob", 0.0)))
         probabilities.append(_clamp01(math.exp(logprob)))
         no_speech.append(_clamp01(_as_float(getattr(segment, "no_speech_prob", 0.0))))
+        for word in getattr(segment, "words", None) or ():
+            words.append(
+                WordSpan(
+                    str(word.word),
+                    max(0.0, _as_float(word.start)),
+                    max(0.0, _as_float(word.end)),
+                    _clamp01(_as_float(word.probability)),
+                )
+            )
 
     if weights:
         confidence = _clamp01(
@@ -129,6 +149,7 @@ def summarize_segments(segments: Iterable[Any], info: Any) -> Transcript:
         confidence=confidence,
         speech_probability=speech_probability,
         duration=max(0.0, _as_float(getattr(info, "duration", 0.0))),
+        words=tuple(words),
     )
 
 
@@ -138,6 +159,8 @@ class TranscriptionEngine:
     ``load`` is safe to call from several threads and is a no-op once loaded;
     ``transcribe`` expects a single worker thread, matching the pipeline.
     """
+
+    supports_context = True
 
     def __init__(
         self,
@@ -217,36 +240,41 @@ class TranscriptionEngine:
         )
 
     def transcribe(
-        self, audio: np.ndarray, language: str | None = None, vocabulary: str = ""
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        vocabulary: str = "",
+        *,
+        context: str = "",
     ) -> Transcript:
         """Decode one 16 kHz mono float32 buffer held in memory."""
         model = self._model
         if model is None:
             raise EngineError("The speech model isn't loaded yet.")
         try:
-            prompt = vocabulary_prompt(vocabulary)
-            segments, info = model.transcribe(
-                _with_trailing_silence(audio),
-                task="transcribe",  # never "translate": the original text must survive
-                language=language or None,
-                beam_size=self.beam_size,
-                # Off deliberately. The segmenter has already found the speech,
-                # and this would trim the trailing silence that tells the
-                # decoder the utterance ended — which the shorter encoder
-                # window depends on.
+            prompt = recognition_prompt(model, vocabulary, context)
+            options = dict(
+                task="transcribe",  # the original text must survive
+                language=language or None, beam_size=self.beam_size,
+                # External segmentation keeps quiet frames and acoustic padding.
                 vad_filter=False,
-                condition_on_previous_text=False,  # stops repetition loops on live audio
-                # What condition_on_previous_text gave up was a way to bias the
-                # decoder with context. The vocabulary prompt puts a controlled
-                # piece of that back: it primes this window only, and is not
-                # carried between calls, so it cannot compound into a
-                # repetition loop.
+                condition_on_previous_text=True,
                 initial_prompt=prompt or None,
+                word_timestamps=True,
+                temperature=(0.0, 0.2, 0.4, 0.6),
             )
+            self.last_options = options
+            segments, info = model.transcribe(audio, **options)
             return summarize_segments(segments, info)
         except Exception as exc:
-            log.exception("Transcription failed")
+            log.warning("Transcription failed (%s)", type(exc).__name__)
             raise EngineError("Couldn't process that audio.") from exc
+
+    def detect_language(self, audio: np.ndarray) -> tuple[str, float]:
+        if self._model is None:
+            raise EngineError("The speech model isn't loaded yet.")
+        language, probability, _ = self._model.detect_language(audio=audio, vad_filter=False)
+        return language, probability
 
     def unload(self) -> None:
         with self._lock:
@@ -269,7 +297,7 @@ class EngineCache:
     def __init__(self, factory: Callable[[str, str], Any] | None = None) -> None:
         factory = factory or engine_for
         self._factory = factory
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._engine: TranscriptionEngine | None = None
         self._key: tuple[str, str, str, str, int] | None = None
 
@@ -312,6 +340,34 @@ class EngineCache:
             self._engine = None
             self._key = None
 
+    def load(self, model_name, device_preference="auto", compute_type="auto", cpu_threads=0):
+        """Load one engine, releasing the old weights first. Restore on failure.
+
+        Returning the load error alongside a restored engine lets the UI explain
+        the fallback while the pipeline keeps using the actual working model.
+        Never retain two large native models just to make switching atomic.
+        """
+        with self._lock:
+            previous = self._key if self._engine and self._engine.is_loaded else None
+            try:
+                engine = self.get(model_name, device_preference, compute_type, cpu_threads)
+                engine.load()
+                return engine, None
+            except Exception as exc:
+                self.evict_all()
+                if previous:
+                    log.warning(
+                        "Model switch failed; restoring previous speech model", exc_info=True
+                    )
+                    try:
+                        engine = self.get(previous[1], previous[2], previous[3], previous[4])
+                        engine.load()
+                        return engine, exc
+                    except Exception:
+                        self.evict_all()
+                        log.exception("Previous speech model could not be restored")
+                raise
+
 
 _default_cache: EngineCache | None = None
 _default_cache_lock = threading.Lock()
@@ -327,6 +383,21 @@ def default_cache() -> EngineCache:
 
 
 # ---------- vocabulary ----------
+
+
+def recognition_prompt(model, vocabulary: str, context: str):
+    """Respect Whisper's token budget, including CJK, without losing all hints."""
+    terms = vocabulary_prompt(vocabulary)
+    tokenizer = getattr(model, "hf_tokenizer", None)
+    if tokenizer is None:
+        return " ".join(filter(None, [terms, context[-600:]]))
+    budget = getattr(model, "max_length", 448) // 2 - 1
+    hints = tokenizer.encode(" " + terms, add_special_tokens=False).ids if terms else []
+    history = tokenizer.encode(" " + context, add_special_tokens=False).ids if context else []
+    # Reserve some text context when a user's vocabulary is unusually long.
+    hints = hints[:max(0, budget - min(32, len(history)))]
+    remaining = budget - len(hints)
+    return hints + (history[-remaining:] if remaining else [])
 
 #: The prompt is decoder conditioning and shares the context window with the
 #: audio. Whisper's window is small; an unbounded word list would crowd out
@@ -374,10 +445,8 @@ def _build_model(
 ) -> Any:
     from faster_whisper import WhisperModel
 
-    from . import snug_window
-
-    snug_window.apply()
-
+    # Preserve upstream's supported encoder window. Shortening pad_or_trim
+    # globally changes positional/timestamp assumptions for every model.
     compute_type = precision if precision != "auto" else ("float16" if device == "cuda" else "int8")
     if local_path is not None:
         # faster-whisper defaults to 4 threads whatever the machine has.

@@ -49,9 +49,10 @@ __all__ = ["SettingsDeps", "SettingsView"]
 SECTIONS: tuple[tuple[str, str], ...] = (
     ("everyday", "Everyday"),
     ("languages", "Languages & translation"),
-    ("captions", "Captions"),
+    ("captions", "Subtitle overlay"),
     ("audio", "Audio & sources"),
-    ("intelligence", "Models & providers"),
+    ("models", "Speech models"),
+    ("intelligence", "Translation providers"),
     ("engine", "Transcription & performance"),
     ("processing", "Remote Processing"),
     ("diagnostics", "Diagnostics"),
@@ -83,16 +84,20 @@ class SettingsDeps:
     api_key_set: Callable[[str, str], None] | None = None
     api_key_delete: Callable[[str], None] | None = None
     release_models: Callable[[], None] | None = None
+    downloads: Any = None
+    speech_state: Callable[[], Any] | None = None
+    activate_model: Callable[[], None] | None = None
     diagnostics: Callable[[], dict] | None = None
     """Unloads the active model so its files can be removed. Without this a
     delete fails on Windows, because stopping captions keeps the model warm."""
 
 
 class SettingsView(QWidget):
-    """The seven settings sections, and the signals the shell acts on."""
+    """Task-focused settings pages and the signals the shell acts on."""
 
     restart_capture_requested = Signal()
     preview_requested = Signal(bool)
+    overlay_position_reset_requested = Signal()
     style_changed = Signal()
     check_updates_requested = Signal()
     shortcuts_changed = Signal(dict)
@@ -125,6 +130,7 @@ class SettingsView(QWidget):
             "captions": self.captions,
             "audio": self.audio,
             "intelligence": self.intelligence,
+            "models": self.intelligence.models_page,
             "shortcuts": self.shortcuts,
             "general": self.general,
             "about": self.about,
@@ -160,7 +166,8 @@ class SettingsView(QWidget):
         self.advanced_toggle = QCheckBox("Advanced Mode")
         self.advanced_toggle.setChecked(store.settings.general.advanced_mode)
         self.advanced_toggle.setToolTip(
-            "Show engine, model and server controls. Your settings are preserved when hidden."
+            "Show performance, provider and server controls. "
+            "Your settings are preserved when hidden."
         )
         self.advanced_toggle.toggled.connect(self._toggle_advanced)
         rail_layout.addWidget(self.advanced_toggle)
@@ -218,6 +225,7 @@ class SettingsView(QWidget):
         self.intelligence.restart_capture_requested.connect(self.restart_capture_requested)
         self.intelligence.providers_changed.connect(self.languages.sync_provider)
         self.captions.style_changed.connect(self.style_changed)
+        self.captions.position_reset_requested.connect(self.overlay_position_reset_requested)
         self.about.check_updates_requested.connect(self.check_updates_requested)
         self.shortcuts.bindings_changed.connect(self._on_shortcuts)
 

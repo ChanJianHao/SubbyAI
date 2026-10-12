@@ -1,21 +1,19 @@
 """Caption quality as four cards, plus the one-time download behind them.
 
 The picker knows nothing about settings: it is told which tier is chosen and
-reports which one the user picked. It does own the download, because that is a
-long job with progress that belongs next to the card that started it — and the
-engine's real model name never reaches a label here, only the tier's name.
+reports which one the user picked. Downloads belong to a shared coordinator so
+Live and Settings observe the same job and repeated clicks cannot start another.
 """
 
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
+from ...asr.lifecycle import ModelDownloads
 from ...core.settings import TIER_MODELS, QualityTier
-from ..motion import confirm_action, reveal
 from ..motion_widgets import SmoothProgressBar as QProgressBar
 from ..widgets import TIER_LABELS as TIER_TITLES
 from ..widgets import size_text as _size_text
@@ -35,9 +33,6 @@ class QualityPicker(QWidget):
     tier_chosen = Signal(str)
     download_completed = Signal()
 
-    _progressed = Signal(float, str)
-    _finished = Signal(bool, str)
-
     def __init__(
         self,
         model_manager: Any = None,
@@ -48,7 +43,8 @@ class QualityPicker(QWidget):
         self._models = model_manager
         self._capability = capability
         self._tier = QualityTier.BALANCED
-        self._cancel = threading.Event()
+        self.downloads = None
+        self._download_model = ""
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
@@ -75,8 +71,38 @@ class QualityPicker(QWidget):
         self.group.add(self.download_button)
         column.addWidget(self.group)
 
-        self._progressed.connect(self._on_progress)
-        self._finished.connect(self._on_finished)
+        if model_manager is not None:
+            self.set_downloads(ModelDownloads(model_manager, self))
+
+    def set_downloads(self, downloads):
+        if self.downloads is not None:
+            self.downloads.changed.disconnect(self._download_changed)
+            self.downloads.finished.disconnect(self._download_finished)
+        self.downloads = downloads
+        downloads.changed.connect(self._download_changed)
+        downloads.finished.connect(self._download_finished)
+
+    def _download_changed(self, model, progress):
+        self._download_model = model
+        from ..model_catalogue import installation_text
+
+        self._on_progress(progress.fraction, installation_text(model, progress))
+        self.progress.setVisible(progress.phase in ("checking", "downloading", "verifying"))
+        if progress.phase in ("checking", "verifying"):
+            self.progress.setRange(0, 0)
+        self.download_button.setEnabled(progress.phase in ("error", "cancelled", "done"))
+        self.note.show()
+
+    def _download_finished(self, model, ok):
+        from ..model_catalogue import installation_text
+
+        self.refresh_states()
+        self.note.setText(installation_text(model, self.downloads.progress[model]))
+        self.note.show()
+        self.download_button.setEnabled(True)
+        self.progress.hide()
+        if ok:
+            self.download_completed.emit()
 
     # ---------- state ----------
 
@@ -105,7 +131,7 @@ class QualityPicker(QWidget):
         pending = not self._is_downloaded(self._tier) and self._models is not None
         self.download_button.setVisible(pending)
         self.note.setVisible(pending)
-        if pending:
+        if pending and not (self.downloads and self.downloads.busy):
             self.note.setText(
                 f"{TIER_TITLES[self._tier]} downloads once "
                 f"({size_text(TIER_MODELS[self._tier][1])}) and then works with no "
@@ -146,32 +172,17 @@ class QualityPicker(QWidget):
 
     def start_download(self, model: str = "") -> None:
         """Fetch a model. Defaults to the selected tier's; the catalogue names its own."""
-        if self._models is None:
+        if self.downloads is None:
             return
         model = model or TIER_MODELS[self._tier][0]
-        self._cancel = threading.Event()
-        self.download_button.setEnabled(False)
-        self.progress.setValue(0)
-        self.progress.reset()
-        self.progress.setTextVisible(False)
-        reveal(self.progress, True)
-        models = self._models
-
-        def run() -> None:
-            def report(progress) -> None:
-                self._progressed.emit(progress.fraction, progress.message)
-
-            try:
-                ok = models.download(model, report, self._cancel)
-            except Exception as exc:
-                self._finished.emit(False, str(exc))
-                return
-            self._finished.emit(bool(ok), "")
-
-        threading.Thread(target=run, name="subbyai-model-download", daemon=True).start()
+        self._download_model = model
+        if not self.downloads.start(model):
+            self.note.setText("Another model is being installed. Wait or cancel it first.")
+            self.note.show()
 
     def cancel_download(self) -> None:
-        self._cancel.set()
+        if self.downloads:
+            self.downloads.cancel()
 
     def _on_progress(self, fraction: float, message: str) -> None:
         self.progress.setRange(0, 100 if fraction >= 0 else 0)
@@ -179,14 +190,3 @@ class QualityPicker(QWidget):
         if message:
             self.note.setText(message)
             self.note.setVisible(True)
-
-    def _on_finished(self, ok: bool, message: str) -> None:
-        self.download_button.setEnabled(True)
-        reveal(self.progress, False)
-        if not ok:
-            self.note.setText(message or "The download didn't finish. Try again in a moment.")
-            self.note.setVisible(True)
-            return
-        self.refresh_states()
-        confirm_action(self.download_button, "Ready ✓")
-        self.download_completed.emit()

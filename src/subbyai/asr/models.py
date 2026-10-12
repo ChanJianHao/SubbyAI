@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 PHASE_CHECKING = "checking"
 PHASE_DOWNLOADING = "downloading"
+PHASE_VERIFYING = "verifying"
 PHASE_DONE = "done"
 PHASE_CANCELLED = "cancelled"
 PHASE_ERROR = "error"
@@ -114,6 +115,7 @@ class ModelManager:
         # every model each time it refreshes. Sizes only change when we
         # download or delete, both of which clear this.
         self._size_cache: dict[str, int] = {}
+        self._bad_downloads: set[str] = set()
 
     @property
     def cache_dir(self) -> Path:
@@ -133,10 +135,10 @@ class ModelManager:
         happily "load" that and fail deep inside CTranslate2.
         """
         name = model_name.strip()
-        globs = spec_or_guess(name).weights_globs
+        model = spec_or_guess(name)
         direct = Path(name)
         if direct.is_dir():
-            return direct if _has_weights(direct, globs) else None
+            return direct if _has_model_files(direct, model) else None
 
         repo = repo_id_for(name)
         root = self._safe_repo_root(repo)
@@ -149,7 +151,7 @@ class ModelManager:
             candidates.remove(pinned)
             candidates.insert(0, pinned)
         for candidate in candidates:
-            if _has_weights(candidate, globs):
+            if _has_model_files(candidate, model):
                 return candidate
         return None
 
@@ -278,10 +280,18 @@ class ModelManager:
         attempt costs only what has not been fetched yet.
         """
         self.forget_sizes()
-        if self.is_downloaded(model_name):
+        existing = self.local_path(model_name)
+        if existing is not None:
             total = estimated_size_mb(model_name) * 1024 * 1024
-            progress(DownloadProgress(total, total, PHASE_DONE))
-            return True
+            progress(DownloadProgress(total, total, PHASE_VERIFYING))
+            if _verify_blob_hashes(existing):
+                if cancel.is_set():
+                    progress(DownloadProgress(total, total, PHASE_CANCELLED))
+                    return False
+                progress(DownloadProgress(total, total, PHASE_DONE))
+                return True
+            self._bad_downloads.add(model_name)
+            (existing / ".subbyai-invalid").write_text("integrity-check-failed", encoding="ascii")
 
         space_error = self.space_error(model_name)
         if space_error:
@@ -301,6 +311,9 @@ class ModelManager:
             from huggingface_hub import snapshot_download
 
             wanted = spec_or_guess(model_name)
+            pending = self._safe_repo_root(wanted.repo) / "snapshots" / wanted.revision
+            pending.mkdir(parents=True, exist_ok=True)
+            (pending / ".subbyai-pending").write_text("awaiting-verification", encoding="ascii")
             snapshot = Path(
                 snapshot_download(
                     wanted.repo,
@@ -311,6 +324,11 @@ class ModelManager:
                     tqdm_class=tracker.tqdm_class(),
                     max_workers=4,
                     token=False,  # public models never need a developer's hub credentials
+                    force_download=model_name in self._bad_downloads
+                    or any(
+                        (candidate / ".subbyai-invalid").exists()
+                        for candidate in (self._safe_repo_root(wanted.repo) / "snapshots").glob("*")
+                    ),
                 )
             )
         except Exception as exc:
@@ -328,23 +346,33 @@ class ModelManager:
         # Confirm rather than assume: "downloaded" must mean the same thing to
         # this method and to ``is_downloaded``, or Start freezes on a fetch the
         # user was told had already happened.
-        if not _has_weights(snapshot, wanted.weights_globs):
+        if not _has_model_files(snapshot, wanted, ignore_invalid=True):
             progress(
                 tracker.snapshot(
                     PHASE_ERROR, "The download finished but the model files are missing."
                 )
             )
             return False
+        progress(tracker.snapshot(PHASE_VERIFYING))
         if not _verify_blob_hashes(snapshot):
+            self._bad_downloads.add(model_name)
+            (snapshot / ".subbyai-invalid").write_text("integrity-check-failed", encoding="ascii")
             progress(
                 tracker.snapshot(
                     PHASE_ERROR,
-                    "A downloaded file failed its integrity check. Remove this model and retry.",
+                    "A downloaded file failed verification. Retry to download a fresh copy.",
                 )
             )
             return False
+        if cancel.is_set():
+            progress(tracker.snapshot(PHASE_CANCELLED))
+            return False
+        (snapshot / ".subbyai-invalid").unlink(missing_ok=True)
+        (snapshot / ".subbyai-pending").unlink(missing_ok=True)
+        (pending / ".subbyai-pending").unlink(missing_ok=True)
+        self._bad_downloads.discard(model_name)
         progress(tracker.snapshot(PHASE_DONE, complete=True))
-        log.info("Model %s ready in %s", model_name, snapshot)
+        log.info("Model %s installed and verified", model_name)
         return True
 
 
@@ -413,6 +441,8 @@ class _ProgressTracker:
 
         class TrackingTqdm(_tqdm):  # type: ignore[misc, valid-type]
             def __init__(self, *args, **kwargs):
+                if tracker.cancelled:
+                    raise _Cancelled
                 # A disabled tqdm skips most of __init__, self.unit included, so
                 # the unit has to be read off the arguments here.
                 self._counts_bytes = kwargs.get("unit") == "B"
@@ -422,7 +452,13 @@ class _ProgressTracker:
 
             def update(self, n=1):
                 if tracker.cancelled:
-                    raise _Cancelled
+                    # Xet calls byte progress from native Rust threads. It
+                    # catches callback exceptions and keeps transferring, so
+                    # throwing here only prints repeated tracebacks. Cancel at
+                    # a Python file boundary; retain partial files for resume.
+                    if not self._counts_bytes:
+                        raise _Cancelled
+                    return super().update(n)
                 if self._counts_bytes:
                     tracker.note(self._bar_id, int(n or 0))
                 return super().update(n)
@@ -463,6 +499,24 @@ def _has_weights(directory: Path, globs: tuple[str, ...] = ("model.bin", "*.bin"
         any(file.is_file() and file.stat().st_size > 0 for file in directory.glob(pattern))
         for pattern in globs
     )
+
+
+def _has_model_files(directory: Path, model, *, ignore_invalid=False) -> bool:
+    """Installed means all required inference assets exist, not just one blob."""
+    if not ignore_invalid and any(
+        (directory / name).exists() for name in (".subbyai-invalid", ".subbyai-pending")
+    ):
+        return False
+    try:
+        return all(
+            any(file.is_file() and file.stat().st_size > 0 for file in directory.glob(pattern))
+            # Whisper supplies default feature-extractor settings when this
+            # optional file is absent in older valid snapshots.
+            for pattern in model.allow_patterns
+            if pattern != "preprocessor_config.json"
+        )
+    except OSError:
+        return False
 
 
 def _verify_blob_hashes(snapshot: Path) -> bool:

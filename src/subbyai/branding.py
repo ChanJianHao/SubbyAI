@@ -6,7 +6,7 @@ not spelunking through paths, bundle ids, and window titles.
 
 from __future__ import annotations
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 #: The mark. Short, used wherever the app refers to itself in running text.
 APP_NAME = "SubbyAI"

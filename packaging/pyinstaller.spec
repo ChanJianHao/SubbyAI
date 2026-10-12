@@ -7,8 +7,11 @@ Produces dist/SubbyAI/ on Windows and "dist/SubbyAI.app" on macOS. onedir keeps
 startup fast and makes updates diffable.
 """
 
+import os
+import re
 import sys
 import tomllib
+from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
@@ -21,6 +24,21 @@ ROOT = Path(SPECPATH).parent
 # so a release tag can never disagree with what the app reports about itself.
 with open(ROOT / "pyproject.toml", "rb") as _f:
     VERSION = tomllib.load(_f)["project"]["version"]
+
+# Embed build identity in the executable, without filesystem or machine details.
+# Generate here so direct PyInstaller builds also receive a fresh timestamp.
+_BUILD_INFO = ROOT / "build" / "freeze-input" / "subbyai_build_info.py"
+_BUILD_INFO.parent.mkdir(parents=True, exist_ok=True)
+_COMMIT = os.environ.get("SUBBYAI_BUILD_COMMIT", "")
+if not re.fullmatch(r"[a-f0-9]{40}", _COMMIT):
+    _COMMIT = ""
+_BUILD_INFO.write_text(
+    f"VERSION = {VERSION!r}\n"
+    f"BUILT_AT_UTC = {datetime.now(UTC).replace(microsecond=0).isoformat()!r}\n"
+    f"COMMIT = {_COMMIT!r}\n"
+    f"SOURCE_DIRTY = {os.environ.get('SUBBYAI_BUILD_DIRTY') != '0'!r}\n",
+    encoding="utf-8",
+)
 
 datas = collect_data_files("faster_whisper")  # Silero VAD assets
 datas += collect_data_files("onnx_asr")  # Parakeet's NumPy filter-bank tables
@@ -87,6 +105,7 @@ a = Analysis(
     datas=datas,
     binaries=gpu_binaries,
     hiddenimports=[
+        "subbyai_build_info",
         "sentencepiece",
         # Imported lazily inside ParakeetEngine.load().
         "onnx_asr",

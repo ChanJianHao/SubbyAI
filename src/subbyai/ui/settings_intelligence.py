@@ -95,24 +95,45 @@ class IntelligenceSection(SettingsSection):
         column.setSpacing(0)
         column.addWidget(hint_label(HEADER_NOTE))
         column.addSpacing(SPACE["lg"])
+        # Speech choices remain discoverable in simple mode. Provider setup has
+        # its own advanced page; both observe the same runtime collaborators.
+        self.models_page = QWidget(self)
+        models_column = QVBoxLayout(self.models_page)
+        models_column.setContentsMargins(0, 0, 0, 0)
+        models_column.setSpacing(0)
+        models_column.addWidget(
+            hint_label(
+                "Choose a quality level to get started. Installing a model adds its files; "
+                "Use model loads it for your next subtitles."
+            )
+        )
+        models_column.addSpacing(SPACE["lg"])
         self.quality = QualityPicker(
             getattr(deps, "model_manager", None), getattr(deps, "capability", None), self
         )
         self.quality.tier_chosen.connect(self._on_tier)
-        self.quality.download_completed.connect(self.restart_capture_requested)
-        column.addWidget(self.quality)
+        downloads = getattr(deps, "downloads", None)
+        if downloads is not None:
+            self.quality.set_downloads(downloads)
+        self.quality.download_completed.connect(self._refresh_catalogue)
+        models_column.addWidget(self.quality)
 
         self.catalogue = ModelCatalogue(
             getattr(deps, "model_manager", None),
-            active_model=lambda: self.settings.model_name,
+            active_model=self._runtime_model,
             parent=self,
         )
         self.catalogue.model_chosen.connect(self._on_model_chosen)
         self.catalogue.tier_restored.connect(self._on_tier_restored)
         self.catalogue.install_requested.connect(self._on_install)
         self.catalogue.remove_requested.connect(self._on_remove)
-        column.addWidget(self.catalogue)
-        column.addWidget(self._build_vocabulary())
+        self.catalogue.downloads = self.quality.downloads
+        if self.quality.downloads is not None:
+            self.quality.downloads.changed.connect(lambda *_: self._refresh_catalogue())
+            self.quality.downloads.finished.connect(lambda *_: self._refresh_catalogue())
+            self.catalogue.cancel_requested.connect(self.quality.cancel_download)
+        models_column.addWidget(self.catalogue)
+        models_column.addWidget(self._build_vocabulary())
         column.addWidget(self._build_providers())
         self.form = ProviderForm(getattr(deps, "api_key_get", None), self)
         self.form.submitted.connect(self._on_submitted)
@@ -137,17 +158,31 @@ class IntelligenceSection(SettingsSection):
     # ---------- the catalogue ----------
 
     def _refresh_catalogue(self) -> None:
+        state = getattr(self._deps, "speech_state", None)
+        self.catalogue.runtime = state() if state else None
         self.catalogue.refresh(
             self.settings.captions.model_override, self.settings.captions.quality
         )
         self.quality.refresh_states()
 
+    def _runtime_model(self) -> str:
+        state = getattr(self._deps, "speech_state", None)
+        runtime = state() if state else None
+        return runtime.model if runtime and runtime.phase.value == "active" else ""
+
     def _on_model_chosen(self, model_id: str) -> None:
         self.settings.captions.model_override = model_id
+        if self.settings.processing.asr_backend == "remote":
+            self.settings.processing.asr_backend = "local"
+            self.apply("processing")
         self.apply("captions")
         self._refresh_catalogue()
         if not self._muted:
-            self.restart_capture_requested.emit()
+            activate = getattr(self._deps, "activate_model", None)
+            if activate:
+                activate()
+            else:
+                self.restart_capture_requested.emit()
 
     def _on_tier_restored(self) -> None:
         self.settings.captions.model_override = ""
@@ -403,8 +438,11 @@ class IntelligenceSection(SettingsSection):
         )
         existing = self.config_for(provider_id)
         config = ProviderSettings(
-            id=provider_id, kind=payload["kind"], label=payload["label"],
-            base_url=payload["base_url"], model=payload["model"],
+            id=provider_id,
+            kind=payload["kind"],
+            label=payload["label"],
+            base_url=payload["base_url"],
+            model=payload["model"],
         )
         if existing is not None and existing.base_url == config.base_url:
             config.enabled = existing.enabled

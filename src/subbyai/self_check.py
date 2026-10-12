@@ -38,6 +38,7 @@ def run_self_check(
     try:
         for name, check in (
             ("imports", _check_imports),
+            ("build identity", _check_build_info),
             ("Qt", _check_ui),
             ("CTranslate2", _check_ctranslate2),
             ("ONNX Runtime", _check_onnx_runtime),
@@ -94,6 +95,18 @@ def _check_imports() -> list[str]:
     return failures
 
 
+def _check_build_info() -> list[str]:
+    from .build_info import get_build_info
+
+    build = get_build_info()
+    if getattr(sys, "frozen", False) and build.built_at is None:
+        return ["the packaged application is missing its version/build timestamp"]
+    print(f"Build identity: {build.display_text}")
+    if build.commit:
+        print(f"Build source: {build.commit} ({'dirty' if build.source_dirty else 'clean'})")
+    return []
+
+
 def _check_ui() -> list[str]:
     """Instantiate real Qt surfaces against a temporary, private-free profile."""
     import os
@@ -115,6 +128,7 @@ def _check_ui() -> list[str]:
         from .ui.overlay import CaptionOverlay
         from .ui.settings_view import SettingsView
         from .ui.shell import Shell
+        from .ui.tray import Tray
 
         app = QApplication.instance() or QApplication([])
         if sys.platform == "win32":
@@ -136,6 +150,36 @@ def _check_ui() -> list[str]:
             overlay = CaptionOverlay(store.settings)
             shell.show()
             app.processEvents()
+            failures = _check_overlay_startup(app, Path(scratch) / "overlay-control")
+            if failures:
+                return failures
+            # Exercise the actual tray QAction and deferred restore path, not
+            # just QWidget's logical visibility. Native hiding/minimizing can
+            # otherwise pass Qt-only checks while the main window stays absent.
+            tray = Tray(shell)
+            tray.open_requested.connect(shell.show_for_user)
+            failures = _check_tray_restore(app, shell, tray)
+            if failures:
+                return failures
+            if not shell.version_label.isVisible():
+                return ["the application version/build timestamp is not visible"]
+            if shell.version_label.width() < shell.version_label.minimumSizeHint().width():
+                return ["the application version/build timestamp is clipped"]
+            # Exercise the release-blocking default auto-hide path in the
+            # actual frozen Qt runtime. Opacity alone never maps a window.
+            segment = CaptionSegment(text="Subtitles are ready.", language="en")
+            overlay.show_segment(segment)
+            app.processEvents()
+            if not overlay.isVisible() or not overlay.visible_pairs:
+                return ["the enabled overlay did not display its caption"]
+            window_id = overlay.winId()
+            overlay.set_enabled(False)
+            if overlay.isVisible():
+                return ["disabling the overlay did not hide its window"]
+            overlay.set_enabled(True)
+            app.processEvents()
+            if not overlay.isVisible() or overlay.winId() != window_id:
+                return ["enabling the overlay failed or recreated its native window"]
             if shell.minimumSizeHint().width() > 640:
                 return ["the settings layout exceeds the supported minimum width"]
             for index in (1, 2, 0, 2, 0):
@@ -164,6 +208,262 @@ def _check_ui() -> list[str]:
         print(f"Qt surfaces and motion: OK ({app.platformName()}, temporary profile)")
     except Exception as exc:
         return [f"Qt surfaces: {exc}"]
+    return []
+
+
+def _check_overlay_startup(app, scratch: Path) -> list[str]:
+    """Fixed controller/pipeline check, with controlled slow/failing dependencies.
+
+    No real audio or account configuration is touched. Recognition with actual
+    models is a separate mandatory check. This runs in the frozen Qt runtime too.
+    """
+    import threading
+    import time
+
+    from PySide6.QtCore import QTimer
+
+    from . import paths
+    from .app import Controller
+    from .asr.engine import EngineCache, EngineError, Transcript
+    from .audio.base import AudioDevice
+    from .core.health import HealthState
+    from .core.settings import SettingsStore
+    from .pipeline import PipelinePhase
+    from .system import window_effects
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    overrides = {
+        "data_dir": scratch,
+        "config_dir": scratch,
+        "models_dir": scratch / "models",
+        "translation_models_dir": scratch / "translation",
+        "log_dir": scratch / "logs",
+        "sessions_db": scratch / "sessions.db",
+        "exports_dir": scratch / "exports",
+    }
+    originals = {name: getattr(paths, name) for name in overrides}
+    for name, value in overrides.items():
+        setattr(paths, name, lambda value=value: value)
+    controller = None
+    release, entered = threading.Event(), threading.Event()
+    save_release = threading.Event()
+    save_release.set()
+    heartbeat = QTimer()
+    ticks = []
+    heartbeat.timeout.connect(lambda: ticks.append(time.monotonic()))
+    heartbeat.start(10)
+
+    def settle(predicate, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not predicate() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.002)
+        app.processEvents()
+        if not predicate():
+            raise AssertionError("a lifecycle transition timed out")
+
+    native = window_effects.IS_WINDOWS and app.platformName() == "windows"
+    durations = []
+    device = AudioDevice("validation", "Validation source", 16000, 1, True, True)
+
+    class Capture:
+        def start(self, selected, callback):
+            return device
+
+        def stop(self):
+            pass
+
+    class Engine:
+        def transcribe(self, audio, **kwargs):
+            return Transcript("")
+
+    try:
+        store = SettingsStore(scratch / "settings.json")
+        store.settings.captions.model_override = "tiny"
+        store.settings.captions.compute_device = "cpu"
+        store.settings.captions.target_language = ""
+        store.settings.history.enabled = False
+        store.settings.overlay.visible = False
+        store.settings.general.reduce_motion = True
+        controller = Controller(app, store)
+        controller.engines = EngineCache()
+        controller.models.is_downloaded = lambda model: True
+        controller._devices_ready = True
+        controller._devices = [device]
+        controller.captioner._capture_factory = Capture
+        controller.captioner._speech_detector_factory = None
+        controller.shell.show()
+        controller._on_overlay_toggled(False)
+        app.processEvents()
+
+        def loading(config):
+            entered.set()
+            if not release.wait(5):
+                raise EngineError("Controlled startup timed out")
+            raise EngineError("Controlled startup failure: retry captions")
+
+        controller.captioner._engine_provider = loading
+        controller._begin_session()
+        settle(entered.is_set)
+        settle(lambda: controller.captioner.health.state is HealthState.STARTING)
+
+        def assert_window(enabled):
+            assert controller.live.overlay_chip.isChecked() is enabled
+            assert controller.overlay.isVisible() is enabled
+            if enabled:
+                assert controller.overlay._render_pairs(), "enabled bar painted no feedback"
+            if native:
+                assert (
+                    bool(window_effects._user32.IsWindowVisible(int(controller.overlay.winId())))
+                    is enabled
+                )
+
+        for _ in range(20):
+            for enabled in (True, False):
+                before = time.perf_counter()
+                controller.live.overlay_chip.click()
+                durations.append(time.perf_counter() - before)
+                app.processEvents()
+                assert_window(enabled)
+        controller.live.overlay_chip.click()
+        app.processEvents()
+        assert "Starting" in controller.live.overlay_chip.text()
+        handle = int(controller.overlay.winId())
+        if native:
+            foreground = (
+                int(window_effects._user32.GetForegroundWindow())
+                if hasattr(window_effects._user32, "GetForegroundWindow")
+                else 0
+            )
+            window_effects._user32.ShowWindow(handle, 0)
+            assert controller.overlay.isVisible()  # Qt/native state disagreement
+            controller._on_overlay_toggled(True)
+            assert_window(True)
+            if foreground:
+                assert int(window_effects._user32.GetForegroundWindow()) == foreground
+
+        save_entered = threading.Event()
+        original_write = store._write
+        save_release.clear()
+
+        def slow_write(settings):
+            save_entered.set()
+            if not save_release.wait(5):
+                raise OSError("Controlled settings write timeout")
+            original_write(settings)
+
+        store._write = slow_write
+        controller._on_overlay_toggled(False)
+        settle(save_entered.is_set)
+        tick_count = len(ticks)
+        for enabled in (True, False, True):
+            before = time.perf_counter()
+            controller.live.overlay_chip.click()
+            durations.append(time.perf_counter() - before)
+            app.processEvents()
+            assert_window(enabled)
+        settle(lambda: len(ticks) >= tick_count + 3)
+        save_release.set()
+        assert store.flush_pending(5)
+        store._write = original_write
+
+        release.set()
+        settle(lambda: not controller.captioner.has_workers)
+        assert controller.captioner.health.state is HealthState.ERROR
+        assert "Error" in controller.live.overlay_chip.text()
+        assert_window(True)
+        assert not controller.live.banner.isHidden()
+
+        controller.captioner._engine_provider = lambda config: Engine()
+        for _ in range(3):
+            controller._begin_session()
+            settle(lambda: controller.captioner.phase is PipelinePhase.RUNNING)
+            controller.stop_captions()
+            settle(lambda: not controller.captioner.has_workers)
+            assert_window(True)
+        controller._on_overlay_toggled(False)
+        assert_window(False)
+        assert int(controller.overlay.winId()) == handle
+        assert max(durations) < 0.15, f"click blocked for {max(durations):.3f} seconds"
+        print(
+            f"Overlay lifecycle: OK ({app.platformName()}, {len(durations)} clicks, "
+            f"max {max(durations) * 1000:.1f} ms, slow save/startup, failure/retry, same window)"
+        )
+    except Exception as exc:
+        return [f"Overlay lifecycle: {exc}"]
+    finally:
+        release.set()
+        save_release.set()
+        heartbeat.stop()
+        if controller is not None:
+            controller.captioner.stop(drain=False)
+            controller.captioner.wait(10)
+            controller.store.flush_pending(5)
+            controller._level_timer.stop()
+            controller._model_timer.stop()
+            controller._retention_timer.stop()
+            if controller._retention_thread:
+                controller._retention_thread.join(5)
+            controller.sessions.close()
+            controller.overlay.close()
+            controller.shell.hide()
+            controller.shell.deleteLater()
+            controller.overlay.deleteLater()
+            controller.deleteLater()
+            app.processEvents()
+        for name, value in originals.items():
+            setattr(paths, name, value)
+    return []
+
+
+def _check_tray_restore(app, shell, tray) -> list[str]:
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    def settle():
+        loop = QEventLoop()
+        QTimer.singleShot(30, loop.quit)
+        loop.exec()
+
+    native = None
+    if sys.platform == "win32" and app.platformName() == "windows":
+        import ctypes
+        from ctypes import wintypes
+
+        native = ctypes.WinDLL("user32")
+        for name in ("IsWindowVisible", "IsIconic", "IsZoomed"):
+            function = getattr(native, name)
+            function.argtypes = [wintypes.HWND]
+            function.restype = wintypes.BOOL
+        native.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+
+    handle = int(shell.winId())
+    scenarios = ["hidden", "minimized", "maximized_minimized"]
+    if native is not None:
+        scenarios.append("native_hidden")
+    for scenario in scenarios:
+        shell.showNormal()
+        settle()
+        if scenario == "hidden":
+            shell.close()  # close-to-tray
+        elif scenario == "native_hidden":
+            native.ShowWindow(handle, 0)  # logical Qt visibility can remain true
+        else:
+            if scenario == "maximized_minimized":
+                shell.showMaximized()
+                settle()
+            shell.showMinimized()
+        settle()
+        tray._open_action.trigger()
+        settle()
+        if not shell.isVisible() or shell.isMinimized() or int(shell.winId()) != handle:
+            return [f"tray Open did not restore the {scenario} window"]
+        if native is not None and (not native.IsWindowVisible(handle) or native.IsIconic(handle)):
+            return [f"tray Open left the {scenario} native window hidden/minimized"]
+        if scenario == "maximized_minimized" and not shell.isMaximized():
+            return ["tray Open discarded the window's maximized state"]
+    shell.showNormal()
+    settle()
+    print(f"Tray Open: OK ({', '.join(scenarios)}, same native window)")
     return []
 
 

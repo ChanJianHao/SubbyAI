@@ -732,7 +732,7 @@ wheels = [
 
 [[package]]
 name = "subbyai"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "ctranslate2" },

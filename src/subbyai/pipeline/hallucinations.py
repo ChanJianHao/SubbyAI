@@ -42,12 +42,15 @@ class HallucinationFilter:
         normalized = _normalize(stripped)
         if not normalized:
             return True
-        if normalized in self._phrases:
+        # Phrase lists include ordinary dialogue ("hello", "thank you", names).
+        # Literal matches alone are not evidence that speech was hallucinated.
+        weak = speech_probability < 0.6 or confidence < 0.5
+        if normalized in self._phrases and weak:
             return True
 
         # A known filler plus a little punctuation/politeness is still filler,
         # but only when the whole caption is short — never mid-sentence.
-        if len(normalized) <= _LENGTH_SLACK * 3:
+        if weak and len(normalized) <= _LENGTH_SLACK * 3:
             for phrase in self._phrases:
                 if not phrase:
                     continue

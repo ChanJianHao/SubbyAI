@@ -1,6 +1,6 @@
 # Release process
 
-V1 is version **1.0.0**. Repository, release tag and application metadata must agree.
+The current patch release is **1.0.1**. Repository, release tag and application metadata must agree.
 Releases use the locked Python/dependency baseline and SHA-pinned CI actions. The build
 workflow produces reviewed artifacts; repository visibility is managed separately.
 
@@ -58,6 +58,11 @@ Record results against each exact binary and checksum:
 
 Hardware tests need actual devices. Automated tests and packaging cannot substitute for physical
 GPU/audio/display acceptance. Do not claim a tested configuration without evidence.
+
+`scripts/build_app.py` embeds the source commit and whether its inputs were uncommitted.
+For release verification, pass `--expected-commit <verified-commit>` to
+`scripts/verify_package.py`. It requires the frozen self-check to finish and the embedded
+revision to match a clean source tree. Check the installed executable with the same option.
 
 The Windows compiler bootstrap uses the immutable Inno Setup 6.7.3 release from
 its official repository, verifies its pinned SHA-256 and publisher signature, and

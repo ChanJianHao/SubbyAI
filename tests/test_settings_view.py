@@ -370,6 +370,21 @@ def test_a_missing_model_offers_a_download_and_says_its_size(settings_store):
     assert "MB download" in view.intelligence.quality.note.text()
 
 
+def test_models_are_discoverable_without_advanced_mode(settings_store):
+    view = build_view(settings_store, model_manager=FakeModels())
+    assert not view.advanced_toggle.isChecked()
+    models = view._keys.index("models")
+    providers = view._keys.index("intelligence")
+    assert not view.nav.item(models).isHidden()
+    assert view.nav.item(providers).isHidden()
+    view.show_section("models")
+    assert view._current_key() == "models"
+    assert not view.advanced_toggle.isChecked()
+    view.languages.change_provider_requested.emit()
+    assert view._current_key() == "intelligence"
+    assert view.advanced_toggle.isChecked()
+
+
 # ---------- general ----------
 
 

@@ -25,7 +25,11 @@ storage choices; excluded text is removed before entering the disk writer. Turni
 choices saves only session dates and languages. Failed translations are not saved.
 Session-only retention keeps new captions in memory, and **Clear Live when stopping** also removes
 the in-app transcript after Stop. Existing saved history is retained until explicitly deleted or
-expired by its policy. Audio is never recorded to disk by the live pipeline.
+expired by its policy. Normal live operation does not record audio to disk. Developer tracing is
+disabled by default; an explicit `SUBBYAI_TRACE_DIR` plus `SUBBYAI_TRACE_CONTENT=1` intentionally
+records local audio and intermediate text, independently of history preferences. Numeric-only
+traces need only the directory variable. Trace content is bounded, not encrypted, and excluded
+from normal exported diagnostics. See [accuracy investigation](accuracy-investigation.md).
 
 Enabled history uses local SQLite/FTS5. Retention runs at startup, when its settings change and
 hourly while the app remains open, protecting the active session. Storage failures produce a

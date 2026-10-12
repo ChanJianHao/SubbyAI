@@ -1,8 +1,9 @@
-"""Native window polish, and two things the overlay genuinely depends on.
+"""Native window polish, reliable user-requested restore and overlay operations.
 
 Everything here is Windows-only and every call is failure-tolerant: an older
-Windows build simply refuses the attribute and we return ``False``. Nothing in
-this module is load-bearing for captions, so nothing in it may raise.
+Windows build simply refuses an attribute and we return ``False``. Native
+restoration must map a requested window even when Qt thinks it is visible.
+Failures are reported to the caller; nothing here may raise.
 
 Two are not cosmetic:
 
@@ -62,6 +63,12 @@ if IS_WINDOWS:
 
     _user32.IsWindow.argtypes = [wintypes.HWND]
     _user32.IsWindow.restype = wintypes.BOOL
+    _user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    _user32.IsWindowVisible.restype = wintypes.BOOL
+    _user32.IsIconic.argtypes = [wintypes.HWND]
+    _user32.IsIconic.restype = wintypes.BOOL
+    _user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.ShowWindow.restype = wintypes.BOOL
     _user32.SetWindowPos.argtypes = [
         wintypes.HWND,
         wintypes.HWND,
@@ -74,6 +81,12 @@ if IS_WINDOWS:
     _user32.SetWindowPos.restype = wintypes.BOOL
     _user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
     _user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    _get_style = getattr(_user32, "GetWindowLongPtrW", _user32.GetWindowLongW)
+    _set_style = getattr(_user32, "SetWindowLongPtrW", _user32.SetWindowLongW)
+    _get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+    _get_style.restype = ctypes.c_ssize_t
+    _set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    _set_style.restype = ctypes.c_ssize_t
     _dwmapi.DwmSetWindowAttribute.argtypes = [
         wintypes.HWND,
         wintypes.DWORD,
@@ -123,6 +136,28 @@ def apply_rounded_corners(win_id: int) -> bool:
     return _set_attribute(hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_ROUND)
 
 
+def restore_window(win_id: int) -> bool:
+    """Map/restore a user-requested main window, even if Qt thinks it is visible.
+
+    Native hiding can leave QWidget visibility unchanged. ShowWindow's return
+    value describes the *previous* visibility, so inspect the resulting window.
+    This is used only for an explicit Open action, never by the subtitle overlay.
+    """
+    hwnd = _hwnd(win_id)
+    if hwnd is None:
+        return False
+    try:
+        _user32.ShowWindow(hwnd, 9 if _user32.IsIconic(hwnd) else 5)  # SW_RESTORE / SW_SHOW
+        # The first ShowWindow can honor a launcher's STARTUPINFO(SW_HIDE).
+        # An explicit Open request must override that initial launch preference.
+        if not _user32.IsWindowVisible(hwnd):
+            _user32.ShowWindow(hwnd, 5)
+        return bool(_user32.IsWindowVisible(hwnd) and not _user32.IsIconic(hwnd))
+    except Exception:
+        log.debug("Main window native restore failed", exc_info=True)
+        return False
+
+
 def set_topmost(win_id: int) -> bool:
     """Re-assert always-on-top without stealing focus, moving or resizing.
 
@@ -146,6 +181,51 @@ def set_topmost(win_id: int) -> bool:
         )
     except Exception:
         log.debug("SetWindowPos failed", exc_info=True)
+        return False
+
+
+def show_overlay(win_id: int) -> bool:
+    """Verify native mapping without activation, including Qt/native visibility drift."""
+    hwnd = _hwnd(win_id)
+    if hwnd is None:
+        return False
+    try:
+        if not _user32.IsWindowVisible(hwnd):
+            _user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE, never steal the foreground
+        if not _user32.IsWindowVisible(hwnd):
+            _user32.SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE | 0x0004 | 0x0040,
+            )  # SWP_NOZORDER | SWP_SHOWWINDOW overrides launch-time SW_HIDE
+        return bool(_user32.IsWindowVisible(hwnd) and not _user32.IsIconic(hwnd))
+    except Exception:
+        log.debug("Overlay native mapping failed", exc_info=True)
+        return False
+
+
+def set_input_transparent(win_id: int, enabled: bool) -> bool:
+    """Update native click-through without hiding/recreating the layered window."""
+    hwnd = _hwnd(win_id)
+    if hwnd is None:
+        return False
+    try:
+        style = _get_style(hwnd, -20)  # GWL_EXSTYLE
+        updated = style | 0x08000000  # WS_EX_NOACTIVATE
+        updated = updated | 0x20 if enabled else updated & ~0x20  # WS_EX_TRANSPARENT
+        if style != updated:
+            ctypes.set_last_error(0)
+            result = _set_style(hwnd, -20, updated)
+            if result == 0 and ctypes.get_last_error():
+                log.warning("Overlay native input-style request failed")
+                return False
+        return True
+    except Exception:
+        log.debug("Overlay input-style update failed", exc_info=True)
         return False
 
 

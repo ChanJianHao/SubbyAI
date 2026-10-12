@@ -25,10 +25,11 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import APP_NAME, branding, paths
 from .asr.engine import EngineError, default_cache
-from .asr.models import DownloadProgress, ModelManager
+from .asr.lifecycle import ModelDownloads, SpeechPhase, SpeechState
+from .asr.models import ModelManager
 from .audio.base import AudioCaptureError, AudioDevice, DevicePoller, create_capture, resolve_device
 from .core import logging_setup, secrets
-from .core.events import CaptionSegment
+from .core.events import CaptionSegment, RecognitionState, TranslationState
 from .core.health import HealthReport, HealthState
 from .core.settings import (
     IntelligenceSettings,
@@ -58,17 +59,13 @@ _LIVE, _HISTORY, _SETTINGS = 0, 1, 2
 class Controller(QObject):
     """Owns the objects and the conversations between them."""
 
-    download_progress = Signal(object)
-    # Emitted (from the download worker thread) when a model finishes
-    # downloading. Qt signals are the one cross-thread hop that works here:
-    # QTimer.singleShot from a plain threading.Thread has no event dispatcher
-    # to fire on.
-    download_finished = Signal()
     shutdown_ready = Signal()
     devices_changed = Signal(object)
     capability_ready = Signal(object)
     history_storage_failed = Signal()
     retention_finished = Signal(int, bool)
+    speech_state_changed = Signal(object)
+    settings_save_finished = Signal(int, bool)
 
     def __init__(self, app: QApplication, store: SettingsStore):
         super().__init__()
@@ -80,6 +77,10 @@ class Controller(QObject):
         self.sessions.start_writer()
         self.models = ModelManager()
         self.engines = default_cache()
+        self.downloads = ModelDownloads(self.models, self)
+        self._speech_state = SpeechState()
+        self._load_thread = None
+        self._install_continuation: tuple[str, str] | None = None
 
         self.captioner = Captioner(
             engine_provider=self._provide_engine,
@@ -95,8 +96,6 @@ class Controller(QObject):
         from .storage.policy import HistoryPolicy
 
         self._history_policy = HistoryPolicy()
-        self._download_thread: threading.Thread | None = None
-        self._download_cancel = threading.Event()
         self._segment_count = 0
         self._word_count = 0
         self._devices: list[AudioDevice] = []
@@ -106,7 +105,6 @@ class Controller(QObject):
         self._pending_onboarding = False
         self._quitting = False
         self._pending_restart = False
-        self._download_requested = False
         self._watcher = None
         self._capability = None
         self._capture_device: AudioDevice | None = None
@@ -123,6 +121,7 @@ class Controller(QObject):
 
         self._build_surfaces()
         self._connect()
+        self._sync_runtime_ui()
         self._apply_retention()
 
     # ---------- construction ----------
@@ -151,6 +150,9 @@ class Controller(QObject):
                 api_key_set=secrets.set_key,
                 api_key_delete=secrets.delete_key,
                 release_models=self.release_models,
+                downloads=self.downloads,
+                speech_state=lambda: self._speech_state,
+                activate_model=self.activate_model,
                 diagnostics=self._diagnostics,
             ),
         )
@@ -176,6 +178,9 @@ class Controller(QObject):
         captioner.stopped.connect(self._on_stopped)
         captioner.phase_changed.connect(self._on_pipeline_phase)
         captioner.device_opened.connect(lambda _name: log.info("Audio capture opened"))
+        self.overlay.subtitle_presented.connect(
+            lambda payload: self.captioner.record_rendered(**payload)
+        )
 
         self.live.start_requested.connect(self.start_captions)
         self.live.source_changed.connect(self._on_audio_source)
@@ -189,6 +194,8 @@ class Controller(QObject):
 
         self.overlay.geometry_saved.connect(lambda: self.store.notify("overlay"))
         self.overlay.hidden_by_user.connect(self._sync_overlay_controls)
+        self.overlay.state_changed.connect(self._on_overlay_state)
+        self.overlay.visibility_failed.connect(self._on_overlay_failure)
         self.overlay.style_change_requested.connect(lambda: self._open_settings("captions"))
 
         self.history.session_opened.connect(self._open_transcript)
@@ -199,6 +206,7 @@ class Controller(QObject):
 
         self.settings_view.restart_capture_requested.connect(self._restart_capture)
         self.settings_view.preview_requested.connect(self.overlay.show_placement_preview)
+        self.settings_view.overlay_position_reset_requested.connect(self.overlay.restore_geometry)
         self.settings_view.shortcuts_changed.connect(self._register_hotkeys)
         self.settings_view.check_updates_requested.connect(self._check_updates)
 
@@ -222,8 +230,10 @@ class Controller(QObject):
         self.store.subscribe_errors(
             lambda message: self.live.banner.show_message(message, "warning")
         )
-        self.download_progress.connect(self._on_download_progress)
-        self.download_finished.connect(self._on_download_finished)
+        self.downloads.changed.connect(self._on_install_progress)
+        self.downloads.finished.connect(self._on_install_finished)
+        self.speech_state_changed.connect(self._on_speech_state)
+        self.settings_save_finished.connect(self._on_settings_save_finished)
         self.shutdown_ready.connect(self._finish_quit)
         self.devices_changed.connect(self._on_devices_changed)
         self.capability_ready.connect(self._on_capability_ready)
@@ -250,7 +260,9 @@ class Controller(QObject):
         self.tray.set_preset(self.settings.overlay.preset)
         # Show first: _register_hotkeys warns via a banner when the shell is
         # visible, and registering before the show swallowed the warning.
-        self.shell.show()
+        self.shell.show_for_user()
+        self.overlay.set_health(HealthReport(HealthState.OFF))
+        self.overlay.set_enabled(self.settings.overlay.visible)
         self._watcher = DevicePoller(
             self._probe_devices,
             lambda: self.devices_changed.emit(list(self._discovered_devices)),
@@ -276,24 +288,26 @@ class Controller(QObject):
         self._model_timer.stop()
         self._retention_timer.stop()
         self.cancel_download()
-        self._download_cancel.set()
         self.captioner.stop()
         self.hotkeys.unregister_all()
         self.overlay.save_geometry()
         self.overlay.close()
-        self.store.try_save()
+        self.store.save_async(self.settings_save_finished.emit)
         self.live.banner.show_message("Finishing the current phrase and closing safely…", "info")
 
         def shutdown():
             from .translation.builtin import shutdown_downloads
 
             shutdown_downloads()
+            self.store.flush_pending()
             if self._watcher is not None:
                 self._watcher.stop()
             while not self.captioner.wait(timeout=1):
                 pass
-            if self._download_thread is not None:
-                self._download_thread.join()
+            if self.downloads.thread is not None:
+                self.downloads.thread.join()
+            if self._load_thread is not None:
+                self._load_thread.join()
             if self._retention_thread is not None:
                 self._retention_thread.join()
             try:
@@ -317,12 +331,12 @@ class Controller(QObject):
 
     def _finish_quit(self) -> None:
         self.tray.hide()
+        self.shell.close_for_quit()
         self.app.quit()
 
     def show_window(self) -> None:
-        self.shell.show()
-        self.shell.raise_()
-        self.shell.activateWindow()
+        if not self._quitting:
+            self.shell.show_for_user()
 
     # ---------- captioning ----------
 
@@ -333,7 +347,11 @@ class Controller(QObject):
             self.start_captions()
 
     def start_captions(self) -> None:
-        if self.captioner.is_active or self._quitting:
+        if (
+            self.captioner.is_active
+            or self._quitting
+            or self._speech_state.phase is SpeechPhase.LOADING
+        ):
             return
         self._begin_session()
 
@@ -366,6 +384,20 @@ class Controller(QObject):
         # Start and automatic restarts share one gate. Validate the source before
         # a large download, and keep network work out of the inference worker.
         model = self.settings.model_name
+        if self.settings.processing.asr_backend == "local":
+            from .asr.catalogue import spec
+            from .languages import speech_language_support
+
+            supported, auto = speech_language_support(spec(model))
+            source = self.settings.captions.source_language
+            if (not source and not auto) or (source and supported and source not in supported):
+                self.live.banner.show_message(
+                    "This speech model needs a supported spoken language. Choose one in Languages.",
+                    "warning",
+                    "Languages",
+                    "open_languages",
+                )
+                return
         if self.settings.processing.asr_backend == "local" and not self.models.is_downloaded(model):
             self._start_download(model)
             return
@@ -380,77 +412,81 @@ class Controller(QObject):
         self._capture_device = device
         self._start_history()
         self.live.set_running(True)
-        if self.settings.overlay.visible and not self.settings.overlay.auto_hide:
-            self.overlay.show()
+        self.overlay.set_enabled(self.settings.overlay.visible)
 
     def _restart_capture(self) -> None:
         """Apply a setting that needs a fresh capture, without asking the user."""
-        if not self.captioner.is_active:
+        if not self.captioner.is_active or self._pending_restart:
             return
+        self._on_status("Applying your changes — reconnecting captions…")
         self._pending_restart = True
         self.captioner.stop()
 
     # ---------- model download ----------
 
     def _start_download(self, model: str) -> None:
-        if self._download_thread and self._download_thread.is_alive():
-            return
-        tier_label = _tier_label(self.settings)
-        size_mb = self.models.estimated_size_mb(model)
-        self.live.set_download_progress(
-            0.0,
-            f"The {tier_label} caption engine ({size_mb} MB) downloads once and then "
-            "works completely offline. Nothing you play is ever uploaded.",
-        )
-        self.tray.set_health(HealthState.DOWNLOADING)
-        self._download_cancel.clear()
-        self._download_requested = True
-
-        def run() -> None:
-            ok = self.models.download(model, self.download_progress.emit, self._download_cancel)
-            if ok:
-                # Hop to the UI thread via a signal. QTimer.singleShot here
-                # would run on this plain threading.Thread, which has no Qt
-                # event dispatcher, so it would never fire.
-                self.download_finished.emit()
-
-        self._download_thread = threading.Thread(target=run, name="subbyai-download", daemon=True)
-        self._download_thread.start()
-
-    def _on_download_finished(self) -> None:
-        if self._quitting or not self._download_requested or self._download_cancel.is_set():
-            return
-        self._download_requested = False
-        self._begin_session()
+        self._install_continuation = (model, "start")
+        self._on_health(HealthReport(HealthState.DOWNLOADING, "Preparing the speech model…"))
+        if not self.downloads.start(model):
+            self._on_status("Another speech model is downloading. Captions will start afterwards.")
 
     def cancel_download(self) -> None:
-        self._download_requested = False
-        self._download_cancel.set()
+        pending_start = self._install_continuation and self._install_continuation[1] == "start"
+        self._install_continuation = None
+        self.downloads.cancel()
         self.live.hide_download_progress()
+        if pending_start:
+            self._on_health(HealthReport(HealthState.OFF))
 
-    def _on_download_progress(self, progress: DownloadProgress) -> None:
-        if self._quitting or not self._download_requested:
+    def _on_install_progress(self, model, progress):
+        from .ui.model_catalogue import installation_text
+
+        if self._quitting:
             return
-        if progress.phase == "cancelled":
-            self.live.hide_download_progress()
-            return
-        if progress.phase == "error":
+        if self._install_continuation and self._install_continuation[1] == "start":
+            state = (
+                HealthState.ERROR if progress.phase == "error"
+                else HealthState.OFF if progress.phase == "cancelled"
+                else HealthState.DOWNLOADING
+            )
+            self._on_health(HealthReport(state, installation_text(model, progress)))
+        self.live.set_download_progress(progress.fraction, installation_text(model, progress))
+        if progress.phase in ("checking", "verifying", "cancelling"):
+            self.live.progress.setRange(0, 0)
+        if progress.phase in ("error", "cancelled", "done"):
             self.live.hide_download_progress()
             self.live.banner.show_message(
-                progress.message or "The download was interrupted. Check your connection.",
-                "error",
-                "Try again",
+                installation_text(model, progress),
+                "error" if progress.phase == "error" else "info",
+                "Retry" if progress.phase == "error" else "",
                 "retry_download",
             )
+        self._sync_runtime_ui()
+
+    def _on_install_finished(self, model, ok):
+        if self._quitting:
             return
-        if progress.phase == "done":
-            self.live.hide_download_progress()
-            return
-        done_mb = progress.downloaded_bytes // (1024 * 1024)
-        total_mb = max(1, progress.total_bytes // (1024 * 1024))
-        self.live.set_download_progress(
-            progress.fraction, f"Downloading the caption engine — {done_mb} MB of {total_mb} MB"
-        )
+        continuation = self._install_continuation
+        if continuation:
+            requested, action = continuation
+            if model != requested:
+                self.downloads.start(requested)
+            elif ok:
+                self._install_continuation = None
+                if action == "load":
+                    self.activate_model()
+                else:
+                    self._begin_session()
+            else:
+                self._install_continuation = None
+                if action == "start":
+                    self._on_health(HealthReport(
+                        HealthState.ERROR,
+                        "The speech model couldn't be installed. Check your connection "
+                        "and free disk space, then retry.",
+                    ))
+                    self._on_error("Speech model installation failed. Retry from the Models page.")
+        self._sync_runtime_ui()
 
     # ---------- pipeline events ----------
 
@@ -462,7 +498,11 @@ class Controller(QObject):
         self._segment_count += 1
         self._word_count += len(segment.text.split())
         self._update_ticker(segment)
-        if self._session_id is not None and self.settings.history.enabled:
+        if (
+            self._session_id is not None
+            and self.settings.history.enabled
+            and segment.recognition_state is RecognitionState.FINAL
+        ):
             stored = self._history_policy.for_storage(segment)
             if stored is not None:
                 self.sessions.add_segment(self._session_id, stored)
@@ -472,12 +512,23 @@ class Controller(QObject):
             return
         self.overlay.update_segment(segment)
         self.live.update_segment(segment)
-        if self._session_id is not None and self.settings.history.enabled:
+        if (
+            self._session_id is not None
+            and self.settings.history.enabled
+            and segment.recognition_state is RecognitionState.FINAL
+        ):
             stored = self._history_policy.for_storage(segment)
             if stored is not None:
                 self.sessions.update_segment(self._session_id, stored)
+            elif segment.translation_state is TranslationState.GROUPED:
+                # Translation-only history may already contain a fragment that
+                # sentence assembly has superseded. Retract it without queuing
+                # source text excluded by the user's persistence policy.
+                self.sessions.remove_segment(self._session_id, segment.id)
 
     def _on_health(self, report: HealthReport) -> None:
+        if self._quitting:
+            return
         self.live.set_health(report)
         self.shell.set_health(report)
         self.overlay.set_health(report)
@@ -497,6 +548,8 @@ class Controller(QObject):
             self.live.banner.hide()
 
     def _on_status(self, message: str) -> None:
+        if self._quitting:
+            return
         self.live.banner.show_message(message, "info")
 
     def _on_history_storage_failed(self) -> None:
@@ -523,11 +576,36 @@ class Controller(QObject):
     def _on_stopped(self) -> None:
         self.live.start_button.setEnabled(not self._quitting)
         self.live.set_running(False)
-        self.overlay.clear()
-        self.overlay.hide()
+        clear_live = (
+            self.settings.history.clear_live_on_stop
+            or self.settings.history.retention_days == -1
+        )
+        if self._quitting or clear_live:
+            self.overlay.clear()
+        if not self._quitting:
+            self.overlay.set_health(self.captioner.health)
+            self.overlay.set_enabled(self.settings.overlay.visible)
+        if self._speech_state.backend == "remote" and self._speech_state.phase in (
+            SpeechPhase.READY,
+            SpeechPhase.ACTIVE,
+        ):
+            # Remote clients are closed with their session, unlike the
+            # locally cached weights. Never call a closed client Ready.
+            self._on_speech_state(SpeechState())
+        elif self._speech_state.phase is SpeechPhase.ACTIVE:
+            self._on_speech_state(
+                SpeechState(
+                    SpeechPhase.READY,
+                    self._speech_state.model,
+                    self._speech_state.requested,
+                    self._speech_state.source,
+                    self._speech_state.target,
+                    self._speech_state.message,
+                )
+            )
         if not self._quitting:
             self._end_session()
-        if self.settings.history.clear_live_on_stop or self.settings.history.retention_days == -1:
+        if clear_live:
             self.live.clear_segments()
         if self._pending_restart and not self._quitting:
             self._pending_restart = False
@@ -540,6 +618,21 @@ class Controller(QObject):
         self.live.start_button.setEnabled(not busy and not self._quitting)
         if phase.value == "stopping":
             self.live.start_button.setText("Finishing up…")
+        elif phase.value == "preparing":
+            self._on_status("Preparing speech recognition…")
+        elif phase.value == "running":
+            state = self._speech_state
+            self._on_speech_state(
+                SpeechState(
+                    SpeechPhase.ACTIVE,
+                    state.model,
+                    state.requested,
+                    state.source,
+                    state.target,
+                    state.message,
+                    state.backend,
+                )
+            )
 
     def _end_session(self) -> None:
         if self._session_id is not None:
@@ -581,20 +674,151 @@ class Controller(QObject):
 
     def _provide_engine(self, config: SessionConfig):
         processing = from_dict(ProcessingSettings, json.loads(config.processing_json))
+        requested = processing.model if processing.asr_backend == "remote" else config.model_name
+        self.speech_state_changed.emit(
+            SpeechState(
+                SpeechPhase.LOADING,
+                requested=requested,
+                source=config.source_language,
+                target=config.target_language,
+            )
+        )
         if processing.asr_backend == "remote":
             from .asr.remote import RemoteASR
 
-            return RemoteASR(
-                processing,
-                secrets.get_key(secrets.endpoint_key_id("remote-asr", processing.base_url)),
+            with self._model_lifecycle_lock:
+                self.engines.evict_all()
+
+            try:
+                engine = RemoteASR(
+                    processing,
+                    secrets.get_key(secrets.endpoint_key_id("remote-asr", processing.base_url)),
+                )
+            except Exception:
+                self.speech_state_changed.emit(
+                    SpeechState(
+                        SpeechPhase.FAILED,
+                        requested=requested,
+                        message="The speech server couldn't initialize. Check Remote Processing.",
+                        backend="remote",
+                    )
+                )
+                raise
+            self.speech_state_changed.emit(
+                SpeechState(
+                    SpeechPhase.READY,
+                    requested,
+                    requested,
+                    config.source_language,
+                    config.target_language,
+                    backend="remote",
+                )
             )
-        with self._model_lifecycle_lock:
-            engine = self.engines.get(
-                config.model_name, config.compute_device, config.compute_type, config.cpu_threads
-            )
-            engine.beam_size = config.beam_size
-            engine.load()
             return engine
+        with self._model_lifecycle_lock:
+            try:
+                engine, failure = self.engines.load(
+                    config.model_name,
+                    config.compute_device,
+                    config.compute_type,
+                    config.cpu_threads,
+                )
+            except Exception:
+                self.speech_state_changed.emit(
+                    SpeechState(
+                        SpeechPhase.FAILED,
+                        requested=requested,
+                        message="The speech model couldn't load. Retry or choose a smaller model.",
+                    )
+                )
+                raise
+            engine.beam_size = config.beam_size
+            fallback = (
+                "The selected model couldn't load. The previous model was restored."
+                if failure
+                else ""
+            )
+            if not failure and config.compute_device == "gpu" and engine.device == "cpu":
+                fallback = (
+                    "Graphics acceleration couldn't initialize. Speech recognition is using CPU."
+                )
+            self.speech_state_changed.emit(
+                SpeechState(
+                    SpeechPhase.READY,
+                    engine.model_name,
+                    requested,
+                    config.source_language,
+                    config.target_language,
+                    fallback,
+                )
+            )
+            return engine
+
+    def activate_model(self) -> None:
+        """Explicit Use model action, including loading while captions are stopped."""
+        if self._quitting or (self._load_thread and self._load_thread.is_alive()):
+            return
+        if self.captioner.is_active:
+            self._restart_capture()
+            return
+        if self.captioner.has_workers:
+            self._on_status("Wait for the current phrase to finish, then use the model again.")
+            return
+        model = self.settings.model_name
+        if not self.models.is_downloaded(model):
+            self._install_continuation = (model, "load")
+            self.downloads.start(model)
+            return
+        self._model_timer.stop()
+        config = SessionConfig.from_settings(self.settings)
+        self._on_speech_state(SpeechState(SpeechPhase.LOADING, requested=model))
+
+        def load():
+            try:
+                self._provide_engine(config)
+            except Exception:
+                log.exception("Explicit speech-model activation failed")
+
+        self._load_thread = threading.Thread(target=load, name="subbyai-model-load", daemon=True)
+        self._load_thread.start()
+
+    def _on_speech_state(self, state):
+        if self._quitting:
+            return
+        self._speech_state = state
+        self._sync_runtime_ui()
+        if state.message:
+            self.live.banner.show_message(
+                state.message,
+                "warning",
+                "Server settings" if state.backend == "remote" else "Models",
+                "open_remote" if state.backend == "remote" else "open_models",
+            )
+
+    def _sync_runtime_ui(self):
+        selected = (
+            self.settings.processing.model
+            if self.settings.processing.asr_backend == "remote"
+            else self.settings.model_name
+        )
+        self.live.set_speech_state(self._speech_state, selected)
+        self.settings_view.intelligence._refresh_catalogue()
+        self.settings_view.languages.set_speech_state(self._speech_state)
+        from .asr.catalogue import spec
+        from .languages import speech_language_support
+
+        entry = (
+            spec(self.settings.model_name)
+            if self.settings.processing.asr_backend == "local"
+            else None
+        )
+        supported, auto = speech_language_support(entry)
+        self.settings_view.languages.hear.set_supported(supported, auto_detect=auto)
+        self.settings_view.everyday.source.set_supported(supported, auto_detect=auto)
+        if not self.captioner.is_active:
+            loading = self._speech_state.phase is SpeechPhase.LOADING
+            self.live.start_button.setEnabled(not loading and not self._quitting)
+            self.live.start_button.setText("Loading model…" if loading else "Start captions")
 
     def release_models(self) -> None:
         """Unload the cached model so its files can be deleted.
@@ -608,6 +832,7 @@ class Controller(QObject):
             raise RuntimeError("Stop captions before removing a model.")
         with self._model_lifecycle_lock:
             self.engines.evict_all()
+        self._on_speech_state(SpeechState())
 
     def _release_idle_models(self) -> None:
         # Enqueue on the same Qt thread as Start, then let the engine cache lock
@@ -619,6 +844,7 @@ class Controller(QObject):
             with self._model_lifecycle_lock:
                 if not self.captioner.has_workers and not self._pending_restart:
                     self.engines.evict_all()
+                    self.speech_state_changed.emit(SpeechState())
 
         threading.Thread(target=release, name="subbyai-model-release", daemon=True).start()
 
@@ -660,6 +886,10 @@ class Controller(QObject):
         elif section in ("captions", "audio", "intelligence", "processing"):
             self.live.sync_from_settings()
             self.settings_view.everyday.refresh()
+            self.settings_view.languages.refresh()
+            self._sync_runtime_ui()
+            if section == "captions":
+                self._apply_overlay_settings()
             if section == "audio":
                 self.settings_view.everyday.refresh_devices(self._devices)
                 self.settings_view.audio.refresh()
@@ -695,10 +925,35 @@ class Controller(QObject):
         self._apply_overlay_settings()
 
     def _on_overlay_toggled(self, visible: bool) -> None:
+        if self._quitting:
+            return
         self.settings.overlay.visible = visible
-        self.overlay.setVisible(visible)
-        self.store.notify("overlay")
         self._sync_overlay_controls()
+        self.live.set_overlay_state("starting" if visible else "stopping")
+        try:
+            self.overlay.set_enabled(visible)
+        except Exception as exc:
+            log.warning("Could not change overlay visibility (%s)", type(exc).__name__)
+            self._on_overlay_failure()
+        self.store.notify("overlay", persist=False)
+        self._sync_overlay_controls()
+        self._on_overlay_state(self.overlay.state)
+        self.store.save_async(self.settings_save_finished.emit)
+
+    def _on_overlay_failure(self):
+        self.settings.overlay.visible = False
+        self.overlay.hide()
+        self._sync_overlay_controls()
+        self.live.banner.show_message(
+            "The subtitle window couldn't open. Try Overlay again or check Display settings.",
+            "error",
+            "Display settings",
+            "open_settings",
+        )
+        self.store.save_async(self.settings_save_finished.emit)
+
+    def _on_settings_save_finished(self, generation: int, ok: bool):
+        self.store.finish_async_save(generation, ok)
 
     def _on_click_through(self, enabled: bool) -> None:
         self.overlay.set_click_through(enabled)
@@ -713,6 +968,29 @@ class Controller(QObject):
         self.live.sync_from_settings()
         self.tray.set_overlay_visible(self.settings.overlay.visible)
         self.tray.set_click_through(self.settings.overlay.click_through)
+
+    def _on_overlay_state(self, state):
+        blocked = self.live.overlay_chip.blockSignals(True)
+        self.live.overlay_chip.setChecked(
+            state.value not in ("disabled", "stopping")
+            and (state.value != "preview" or self.settings.overlay.visible)
+        )
+        self.live.overlay_chip.blockSignals(blocked)
+        self.live.set_overlay_state(state.value)
+        self.live.overlay_chip.setToolTip(
+            {
+                "disabled": "Overlay window is hidden.",
+                "waiting": "Overlay is enabled and waiting for speech.",
+                "visible": "Subtitles are displayed above your other windows.",
+                "idle": "Overlay is enabled; captions faded after silence.",
+                "preview": "Showing sample subtitles for placement.",
+                "starting": "Overlay is on; speech recognition is starting.",
+                "downloading": (
+                    "Overlay is on; the speech model is downloading. See progress on Live."
+                ),
+                "error": "Overlay is on; captions need attention. See the error on Live.",
+            }[state.value]
+        )
 
     def _enable_history(self) -> None:
         self.settings.history.enabled = True
@@ -909,15 +1187,30 @@ class Controller(QObject):
         elif key == "choose_device":
             self._open_settings("audio")
         elif key == "faster_quality":
-            self._open_settings("intelligence")
+            self._open_settings("models")
         elif key == "open_shortcuts":
             self._open_settings("shortcuts")
-        elif key == "open_settings":
-            self._open_settings("intelligence")
+        elif key in ("open_settings", "open_models"):
+            self._open_settings("models")
+        elif key == "open_languages":
+            self._open_settings("languages")
+        elif key == "open_remote":
+            self._open_settings("processing")
         elif key == "manage_storage":
             self._open_settings("general")
         elif key == "retry_download":
-            self.start_captions()
+            if self._install_continuation:
+                self.downloads.start(self._install_continuation[0])
+            else:
+                model = next(
+                    (
+                        name
+                        for name, state in self.downloads.progress.items()
+                        if state.phase == "error"
+                    ),
+                    self.settings.model_name,
+                )
+                self.downloads.start(model)
 
     def _notify_tray_once(self) -> None:
         if not self.settings.general.usage_intents or getattr(self, "_tray_notified", False):
@@ -958,7 +1251,9 @@ class Controller(QObject):
         if failed:
             self.live.history_warning.show_message(
                 "Older history couldn't be removed. Check free disk space and folder permissions.",
-                "warning", "Storage settings", "manage_storage",
+                "warning",
+                "Storage settings",
+                "manage_storage",
             )
         elif removed:
             self.history.refresh()
@@ -1030,8 +1325,11 @@ def run(argv: list[str] | None = None) -> int:
         instance.release()
         return 1
     theme.apply(
-        app, store.settings.general.theme, store.settings.general.accent,
-        store.settings.general.text_scale, reduce_motion=store.settings.general.reduce_motion,
+        app,
+        store.settings.general.theme,
+        store.settings.general.accent,
+        store.settings.general.text_scale,
+        reduce_motion=store.settings.general.reduce_motion,
     )
     app.setWindowIcon(theme.app_icon())
     log.info("%s %s starting (log: %s)", APP_NAME, branding.VERSION, log_file)

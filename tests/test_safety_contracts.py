@@ -103,6 +103,33 @@ def test_remote_posts_memory_wav_and_uses_manual_language():
         engine.close()
 
 
+@pytest.mark.parametrize("words", [None, "unavailable", {"word": "hello"}])
+def test_remote_optional_unavailable_timestamps_preserve_transcript(words):
+    engine = remote(lambda _: httpx.Response(200, json={"text": "Hello", "words": words}))
+    try:
+        result = engine.transcribe(np.zeros(16000), "en")
+        assert result.text == "Hello" and result.words == ()
+    finally:
+        engine.close()
+
+
+def test_remote_invalid_alignment_cannot_erase_valid_source_text():
+    words = [
+        {"word": "Hello", "start": 0, "end": 0.5},
+        {"word": "phantom", "start": -5, "end": -1},
+        {"word": "phantom", "start": 0.5, "end": 0.1},
+        {"word": "phantom", "start": True, "end": 1},
+        {"word": "phantom", "start": 0.5, "end": 20},
+    ]
+    engine = remote(lambda _: httpx.Response(200, json={"text": "Hello there", "words": words}))
+    try:
+        result = engine.transcribe(np.zeros(16000), "en")
+        # Incomplete/malformed alignment must fall back to full text alignment.
+        assert result.text == "Hello there" and result.words == ()
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("status", [301, 401, 403])
 def test_remote_does_not_retry_auth_errors_or_follow_redirects(status):
     calls = []
@@ -222,7 +249,8 @@ def test_overlap_is_trimmed_but_deliberate_repetition_survives():
     assert reconciler.accept("We will see you tomorrow.", 0, 3)
     assert reconciler.accept("you tomorrow. Bring snacks.", 2.7, 3) == "Bring snacks."
     assert reconciler.accept("Bring snacks.", 6, 1) == "Bring snacks."
-    assert reconciler.accept("Bring snacks.", 6.8, 1) == ""
+    # A new, mostly non-overlapping utterance may intentionally repeat itself.
+    assert reconciler.accept("Bring snacks.", 6.8, 1) == "Bring snacks."
 
 
 @pytest.mark.parametrize(
@@ -312,7 +340,7 @@ def test_stopping_never_reuses_a_model_still_in_native_inference(qt_app):
         captioner._asr_queue.put_nowait(AudioWork(np.zeros(1600), 1, 0.1, time.monotonic()))
         assert entered.wait(2)
         started = time.monotonic()
-        captioner.stop()
+        captioner.stop(drain=False)
         assert time.monotonic() - started < 0.1
         assert not captioner.wait(0.05) and not captioner.start(config, None)
         assert captioner.has_workers

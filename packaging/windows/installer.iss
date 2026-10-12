@@ -7,11 +7,17 @@
 ;   iscc /DAppVersion=x.y.z packaging\windows\installer.iss
 ; The fallback keeps local builds working between releases.
 #ifndef AppVersion
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #endif
 #define AppPublisher "SubbyAI contributors"
 #define AppURL "https://github.com/ChanJianHao/SubbyAI"
 #define AppExeName "SubbyAI.exe"
+#ifndef AppSourceDir
+#define AppSourceDir "..\..\dist\SubbyAI"
+#endif
+#ifndef ReleaseOutputDir
+#define ReleaseOutputDir "..\..\dist"
+#endif
 
 [Setup]
 AppId={{2F7C4A16-9E3B-4D58-B0A1-6C21E5F84D33}}
@@ -27,7 +33,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 PrivilegesRequired=lowest
 LicenseFile=..\..\LICENSE
 OutputBaseFilename=SubbyAI-Setup-{#AppVersion}
-OutputDir=..\..\dist
+OutputDir={#ReleaseOutputDir}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -44,7 +50,7 @@ CloseApplications=yes
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
 [Files]
-Source: "..\..\dist\SubbyAI\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"

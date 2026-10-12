@@ -12,7 +12,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
-from .engine import EngineError, Transcript
+from .engine import EngineError, Transcript, WordSpan
 from .models import ModelManager
 
 if TYPE_CHECKING:
@@ -84,9 +84,7 @@ class ParakeetEngine:
             try:
                 import onnx_asr
             except ImportError as exc:  # pragma: no cover - packaging guard
-                raise EngineError(
-                    "This engine isn't installed with this copy of the app."
-                ) from exc
+                raise EngineError("This engine isn't installed with this copy of the app.") from exc
             local = self._models.local_path(self._model_name)
             if local is None:
                 # Download only through ModelManager, with explicit user action.
@@ -118,10 +116,22 @@ class ParakeetEngine:
         if model is None:
             raise EngineError("The speech model isn't loaded yet.")
         try:
-            text = model.recognize(audio, sample_rate=16000)
+            timestamped = model.with_timestamps() if hasattr(model, "with_timestamps") else model
+            decoded = timestamped.recognize(audio, sample_rate=16000)
         except Exception as exc:
-            log.exception("Transcription failed")
+            log.warning("Transcription failed (%s)", type(exc).__name__)
             raise EngineError("Couldn't process that audio.") from exc
+        text = getattr(decoded, "text", decoded)
+        tokens = getattr(decoded, "tokens", None) or []
+        times = getattr(decoded, "timestamps", None) or []
+        words = tuple(
+            WordSpan(
+                token.replace("\u2581", " "),
+                float(begin),
+                float(times[i + 1]) if i + 1 < len(times) else len(audio) / 16000,
+            )
+            for i, (token, begin) in enumerate(zip(tokens, times, strict=True))
+        )
         return Transcript(
             text=str(text or "").strip(),
             language=None,
@@ -130,6 +140,7 @@ class ParakeetEngine:
             confidence=1.0,
             speech_probability=1.0,
             confidence_known=False,
+            words=words,
         )
 
     def unload(self) -> None:

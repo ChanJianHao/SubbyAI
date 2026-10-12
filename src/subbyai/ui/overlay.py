@@ -21,6 +21,7 @@ import logging
 import weakref
 from collections import deque
 from dataclasses import replace
+from enum import StrEnum
 
 from PySide6.QtCore import (
     QAbstractAnimation,
@@ -61,6 +62,17 @@ log = logging.getLogger(__name__)
 _NOTICE_STATES = (HealthState.SILENT, HealthState.SOUND_NO_SPEECH, HealthState.DELAYED)
 
 
+class OverlayState(StrEnum):
+    DISABLED = "disabled"
+    WAITING = "waiting"
+    VISIBLE = "visible"
+    IDLE = "idle"
+    PREVIEW = "preview"
+    STARTING = "starting"
+    DOWNLOADING = "downloading"
+    ERROR = "error"
+
+
 class CaptionOverlay(QWidget):
     """Frameless, translucent, always-on-top caption panel."""
 
@@ -68,6 +80,9 @@ class CaptionOverlay(QWidget):
     hidden_by_user = Signal()
     scrub_changed = Signal(int)
     geometry_saved = Signal()
+    state_changed = Signal(object)
+    visibility_failed = Signal()
+    subtitle_presented = Signal(object)  # actual painted text; trace recording is opt-in
     """Placement was written into ``settings.overlay.geometry``; persist it."""
 
     RING_SIZE = 50
@@ -79,7 +94,8 @@ class CaptionOverlay(QWidget):
     PILL_ZONE = ControlPill.HEIGHT + SPACE["xs"]
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        # A caption window must remain independent of main-window minimization.
+        super().__init__(None)
         self._settings = settings
         self._style = overlay_style(settings.overlay.preset, settings.overlay)
         self._fonts = OverlayFonts(self._style)
@@ -87,14 +103,21 @@ class CaptionOverlay(QWidget):
         self._ring: deque[CaptionSegment] = deque(maxlen=self.RING_SIZE)
         self._scrub_offset = 0
         self._pairs: list[PairLayout] = []
+        self._caption_pages: dict[int, int] = {}
+        self._painted_text: dict[int, tuple] = {}
         self._retiring: PairLayout | None = None
         self._notice: PairLayout | None = None
         self._entering_id: int | None = None
         self._health: HealthReport | None = None
 
         self._preview = False
+        self._restoring_geometry = False
+        self._state = OverlayState.DISABLED
+        self._last_painted_id = None
+        self._native_warning = False
         self._pinned = False
         self._auto_hidden = False
+        self._enable_acknowledgment = False
         self._drag_origin: QPoint | None = None
         self._press_geometry: QRect | None = None
         self._resize_edge = 0
@@ -125,6 +148,7 @@ class CaptionOverlay(QWidget):
             self, self.HOVER_DWELL_MS, lambda: self._pill.reveal(animated=self._style.animate)
         )
         self._auto_hide_timer = _timer(self, 4000, self._sleep)
+        self._page_timer = _timer(self, 1500, self._advance_caption_pages)
         self._scrub_idle_timer = _timer(self, self.SCRUB_IDLE_MS, self.go_live)
         self._topmost_timer = QTimer(self)
         self._topmost_timer.setInterval(self.TOPMOST_TICK_MS)
@@ -149,6 +173,55 @@ class CaptionOverlay(QWidget):
             self._watch_screen(screen)
         QGuiApplication.instance().screenAdded.connect(self._watch_screen)
         self._watch_window()
+        log.debug("Overlay created flags=%s", int(self.windowFlags()))
+
+    @property
+    def state(self) -> OverlayState:
+        return self._state
+
+    def _report_state(self) -> None:
+        state = (
+            OverlayState.DISABLED
+            if not self.isVisible()
+            else OverlayState.PREVIEW
+            if self._preview
+            else OverlayState.IDLE
+            if self._auto_hidden
+            else OverlayState.STARTING
+            if self._health
+            and self._health.state is HealthState.STARTING
+            else OverlayState.DOWNLOADING
+            if self._health and self._health.state is HealthState.DOWNLOADING
+            else OverlayState.ERROR
+            if self._health and self._health.state is HealthState.ERROR
+            else OverlayState.VISIBLE
+            if self._pairs
+            else OverlayState.WAITING
+        )
+        if state != self._state:
+            self._state = state
+            log.debug(
+                "Overlay state=%s mapped=%s opacity=%.2f",
+                state,
+                self.isVisible(),
+                self.windowOpacity(),
+            )
+            self.state_changed.emit(state)
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Apply the requested preference to the live native window immediately."""
+        log.debug("Overlay requested enabled=%s", enabled)
+        self._settings.overlay.visible = enabled
+        if enabled:
+            self._enable_acknowledgment = True
+            self._relayout()
+            self._wake()
+        else:
+            self._preview = False
+            self._auto_hide_timer.stop()
+            self._window_fade.stop()
+            self.hide()
+        self._report_state()
 
     def _watch_screen(self, screen) -> None:
         if screen not in self._watched_screens:
@@ -192,24 +265,50 @@ class CaptionOverlay(QWidget):
     def show_segment(self, seg: CaptionSegment) -> None:
         """Append a finished caption and wake the panel."""
         self._preview = False
+        self._enable_acknowledgment = False
         self._ring.append(seg)
+        self._page_timer.stop()  # give new visible text a full reading interval
+        retained = {item.id for item in self._ring}
+        self._caption_pages = {
+            key: page for key, page in self._caption_pages.items() if key in retained
+        }
+        self._painted_text = {
+            key: value for key, value in self._painted_text.items() if key in retained
+        }
         if self._scrub_offset:  # hold the reader's window still while scrubbing
             self._scrub_offset = min(self._scrub_offset + 1, self._max_scrub())
         self._relayout(entering=seg.id)
         self._wake()
+        log.debug(
+            "Overlay subtitle received id=%s translated=%s mapped=%s",
+            seg.id,
+            bool(seg.display_translation),
+            self.isVisible(),
+        )
 
     def update_segment(self, seg: CaptionSegment) -> None:
         """Replace a caption in place — how a late translation arrives."""
         for index, existing in enumerate(self._ring):
             if existing.id == seg.id:
+                if (
+                    existing.text != seg.text
+                    or existing.display_translation != seg.display_translation
+                ):
+                    self._caption_pages[seg.id] = 0
+                    self._page_timer.stop()
                 self._ring[index] = seg
                 break
         else:
             return
         self._relayout()
+        if any(pair.segment_id == seg.id for pair in self._pairs):
+            self._wake()
 
     def clear(self) -> None:
         self._ring.clear()
+        self._caption_pages.clear()
+        self._painted_text.clear()
+        self._page_timer.stop()
         self._scrub_offset = 0
         self._drop_retiring()
         self._pill.set_scrubbing(False)
@@ -220,6 +319,7 @@ class CaptionOverlay(QWidget):
         self._relayout()
         if self._notice is not None:
             self._wake()
+        self._report_state()
 
     # ---------- appearance ----------
 
@@ -244,8 +344,13 @@ class CaptionOverlay(QWidget):
         self.set_click_through(settings.overlay.click_through)
         self._relayout()
         if not self._auto_hidden:
-            self.setWindowOpacity(settings.overlay.opacity)
+            self.setWindowOpacity(max(0.2, min(1.0, settings.overlay.opacity)))
         self._restart_auto_hide()
+        if not settings.overlay.visible and not self._preview:
+            self.hide()
+        elif not self.isVisible() or (self._auto_hidden and not settings.overlay.auto_hide):
+            self._wake()
+        self._report_state()
 
     def set_click_through(self, enabled: bool) -> None:
         """Let clicks reach whatever is underneath, and mark the panel so."""
@@ -258,6 +363,10 @@ class CaptionOverlay(QWidget):
         self._preview = enabled
         self._relayout()
         if enabled:
+            self._wake()
+        elif not self._settings.overlay.visible:
+            self.hide()
+        else:
             self._wake()
 
     @property
@@ -331,7 +440,11 @@ class CaptionOverlay(QWidget):
         if rect is None or not geo.is_on_a_screen(rect):
             rect = geo.default_rect(self, self.MIN_WIDTH, max(self.height(), self._chrome_height()))
         self.setGeometry(geo.clamp_rect(rect, area))
-        self._relayout()
+        self._restoring_geometry = True
+        try:
+            self._relayout()
+        finally:
+            self._restoring_geometry = False
 
     def _chrome_height(self) -> int:
         return self.PILL_ZONE + self._style.pad_v * 2
@@ -361,7 +474,15 @@ class CaptionOverlay(QWidget):
         )
         viewport_style = replace(self._style, max_lines=min(self._style.max_lines, budget))
         pairs = [
-            build_pair(seg, viewport_style, self._fonts, width, position, reserve)
+            build_pair(
+                seg,
+                viewport_style,
+                self._fonts,
+                width,
+                position,
+                reserve,
+                page=None if self._preview else self._caption_pages.get(seg.id, 0),
+            )
             for seg in segments
         ]
         while len(pairs) > 1 and (
@@ -384,6 +505,13 @@ class CaptionOverlay(QWidget):
                 if pair.segment_id == self._entering_id and value is not None:
                     pair.opacity = float(value)
         self._pairs = pairs
+        pending_pages = [pair for pair in pairs if pair.page_index + 1 < pair.page_count]
+        if pending_pages and not self._preview and self._settings.overlay.visible:
+            if not self._page_timer.isActive():
+                chars = max(sum(len(line.text) for line in pair.lines) for pair in pending_pages)
+                self._page_timer.start(max(800, min(2500, chars * 45)))
+        else:
+            self._page_timer.stop()
         text = self._notice_text()
         self._notice = build_notice(text, self._style, self._fonts, width) if text else None
         self._apply_height()
@@ -394,6 +522,14 @@ class CaptionOverlay(QWidget):
         end = len(items) - self._scrub_offset
         start = max(0, end - max(1, self._settings.overlay.max_pairs))
         return items[start:end]
+
+    def _advance_caption_pages(self) -> None:
+        self._page_timer.stop()  # recompute dwell for the next page's text
+        for pair in self._pairs:
+            if pair.page_index + 1 < pair.page_count:
+                self._caption_pages[pair.segment_id] = pair.page_index + 1
+        self._relayout()
+        self._wake()
 
     def _render_pairs(self) -> list[PairLayout]:
         """Everything the painter draws, oldest first."""
@@ -409,14 +545,34 @@ class CaptionOverlay(QWidget):
         content = sum(pair.height for pair in pairs) + PAIR_GAP * max(0, len(pairs) - 1)
         height = round(self._chrome_height() + max(0.0, content))
         if height != self.height():
-            self.resize(max(self.minimumWidth(), self.width()), height)
-            self.setGeometry(geo.clamp_rect(self.geometry(), self.screen().availableGeometry()))
+            rect = self.geometry()
+            # Preserve the subtitle's bottom anchor as wrapping/translation
+            # changes its height. Repeated clamping of a fixed top edge made
+            # the panel creep upwards with every long phrase.
+            top = rect.y() if self._restoring_geometry else rect.bottom() + 1 - height
+            rect = QRect(rect.x(), top, max(self.minimumWidth(), self.width()), height)
+            self.setGeometry(geo.clamp_rect(rect, self.screen().availableGeometry()))
 
     def _notice_text(self) -> str:
         report = self._health
-        if report is None or self._pairs or self._preview:
+        if self._preview:
             return ""
-        return report.detail if report.state in _NOTICE_STATES else ""
+        state = report.state if report else HealthState.OFF
+        if state in (HealthState.OFF, HealthState.LISTENING) and not self._enable_acknowledgment:
+            return ""
+        if self._pairs and state not in (
+            HealthState.STARTING,
+            HealthState.DOWNLOADING,
+            HealthState.ERROR,
+        ):
+            return ""
+        return {
+            HealthState.OFF: "Overlay on · Start captions to begin.",
+            HealthState.STARTING: "Starting captions… You can stop from Live.",
+            HealthState.DOWNLOADING: "Getting the speech model… See progress on Live.",
+            HealthState.LISTENING: "Listening for speech…",
+            HealthState.ERROR: "Captions stopped. Open Live to fix the error and retry.",
+        }.get(state, report.detail if report and state in _NOTICE_STATES else "")
 
     # ---------- painting ----------
 
@@ -440,14 +596,53 @@ class CaptionOverlay(QWidget):
             bool(self._scrub_offset),
         )
         painter.end()
+        newest = pairs[-1].segment_id
+        if newest != self._last_painted_id:
+            self._last_painted_id = newest
+            log.debug("Overlay subtitle rendered id=%s mapped=%s", newest, self.isVisible())
+        for pair in pairs:
+            segment = next((item for item in self._ring if item.id == pair.segment_id), None)
+            if segment is None:
+                continue
+            signature = tuple((line.role, line.text) for line in pair.lines)
+            if self._painted_text.get(segment.id) != signature:
+                self._painted_text[segment.id] = signature
+                self.subtitle_presented.emit(
+                    {
+                        "segment": segment,
+                        "lines": [{"role": role, "text": text} for role, text in signature],
+                        "page": pair.page_index,
+                        "visible": self.isVisible(),
+                    }
+                )
 
     # ---------- visibility ----------
 
     def _wake(self) -> None:
+        if not self._settings.overlay.visible and not self._preview:
+            return
         self._auto_hidden = False
+        # Opacity alone cannot map a hidden QWidget. This is also the recovery
+        # path after stopping a session, closing setup, or changing window flags.
+        if not self.isVisible():
+            self._window_fade.stop()
+            self.setWindowOpacity(max(0.2, min(1.0, self._settings.overlay.opacity)))
+            self.show()
+        if (
+            window_effects.IS_WINDOWS
+            and QGuiApplication.platformName() == "windows"
+            and not window_effects.show_overlay(int(self.winId()))
+        ):
+            self._settings.overlay.visible = False
+            self.hide()
+            log.warning("Windows could not map the subtitle window")
+            self.visibility_failed.emit()
+            return
         self._sync_mouse_transparency()
-        self._fade_window(self._settings.overlay.opacity, DURATION["base"])
+        self._fade_window(max(0.2, min(1.0, self._settings.overlay.opacity)), DURATION["base"])
+        self._apply_topmost()
         self._restart_auto_hide()
+        self._report_state()
 
     def _sleep(self) -> None:
         if self._pinned or self._preview or self.underMouse():
@@ -455,13 +650,19 @@ class CaptionOverlay(QWidget):
         # Stay mapped at zero opacity: unmapping surrenders the topmost slot,
         # and winning it back over a game is the fight we are trying to avoid.
         self._auto_hidden = True
+        self._enable_acknowledgment = False
+        self._relayout()
         self._sync_mouse_transparency()
         self._fade_window(0.0, DURATION["gentle"])
+        self._report_state()
 
     def _restart_auto_hide(self) -> None:
         self._auto_hide_timer.stop()
         overlay = self._settings.overlay
-        if not overlay.auto_hide or self._pinned or self._preview or self._notice is not None:
+        persistent_notice = self._notice is not None and not (
+            self._health and self._health.state is HealthState.LISTENING
+        )
+        if not overlay.auto_hide or self._pinned or self._preview or persistent_notice:
             return
         self._auto_hide_timer.start(int(overlay.auto_hide_seconds * 1000))
 
@@ -477,7 +678,8 @@ class CaptionOverlay(QWidget):
 
     def _animations_enabled(self) -> bool:
         return (
-            self._style.animate and not policy().reduced
+            self._style.animate
+            and not policy().reduced
             and not self._settings.general.reduce_motion
         )
 
@@ -499,6 +701,15 @@ class CaptionOverlay(QWidget):
         """An auto-hidden panel is still mapped, so it must stop eating clicks."""
         ignore = self._settings.overlay.click_through or self._auto_hidden
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, ignore)
+        if window_effects.IS_WINDOWS:
+            window_effects.set_input_transparent(int(self.winId()), ignore)
+        else:
+            # WA_TransparentForMouseEvents only affects Qt's own event routing.
+            visible = self.isVisible()
+            if bool(self.windowFlags() & Qt.WindowType.WindowTransparentForInput) != ignore:
+                self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, ignore)
+                if visible:
+                    self.show()
 
     def _on_hide_pressed(self) -> None:
         self._settings.overlay.visible = False
@@ -563,11 +774,26 @@ class CaptionOverlay(QWidget):
         self._apply_topmost()
         if self._settings.overlay.always_on_top:
             self._topmost_timer.start()
+        self._sync_mouse_transparency()
+        screen_index = QGuiApplication.screens().index(self.screen()) + 1
+        rect = self.geometry()
+        log.debug(
+            "Overlay shown display=%s geometry=%s,%s,%s,%s dpr=%.2f flags=%s",
+            screen_index,
+            rect.x(),
+            rect.y(),
+            rect.width(),
+            rect.height(),
+            self.devicePixelRatioF(),
+            int(self.windowFlags()),
+        )
+        self._report_state()
 
     def hideEvent(self, event) -> None:
         self._topmost_timer.stop()
         self._pill.conceal(animated=False)
         super().hideEvent(event)
+        self._report_state()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -575,10 +801,17 @@ class CaptionOverlay(QWidget):
 
     def _apply_topmost(self) -> None:
         """Re-assert always-on-top: a game takes the top slot when it focuses."""
-        if not self._settings.overlay.always_on_top:
+        if (
+            not self._settings.overlay.always_on_top
+            or not self.isVisible()
+            or (window_effects.IS_WINDOWS and QGuiApplication.platformName() != "windows")
+        ):
             return
         try:
-            window_effects.set_topmost(int(self.winId()))
+            ok = window_effects.set_topmost(int(self.winId()))
+            if window_effects.IS_WINDOWS and not ok and not self._native_warning:
+                self._native_warning = True
+                log.warning("Overlay native topmost request failed; Qt topmost remains enabled")
         except Exception:
             log.debug("Could not re-assert always-on-top", exc_info=True)
 

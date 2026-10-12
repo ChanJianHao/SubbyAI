@@ -26,8 +26,8 @@ from ..branding import (
     APP_TAGLINE,
     HOMEPAGE_URL,
     SUPPORT_URL,
-    VERSION,
 )
+from ..build_info import get_build_info
 from ..core.settings import SettingsStore
 from .motion import Expandable, policy, reveal
 from .motion_widgets import MotionToggle as QCheckBox
@@ -345,7 +345,10 @@ class AboutSection(QWidget):
         tagline.setObjectName("heading")
         tagline.setWordWrap(True)
         about.add(tagline)
-        about.add(hint_label(f"Version {VERSION}"))
+        build = get_build_info()
+        self.version_label = hint_label(build.display_text)
+        self.version_label.setToolTip(build.tooltip)
+        about.add(self.version_label)
         self.update_button = QPushButton("Check for updates", self)
         self.update_button.clicked.connect(self.check_updates_requested)
         about.add(self.update_button)

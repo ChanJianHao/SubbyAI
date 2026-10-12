@@ -139,7 +139,7 @@ def _run(qt_app, captioner, config, timeout=15.0, until=None):
 
 @pytest.fixture(autouse=True)
 def _reset_fakes():
-    FakeCapture.script = [TONE, SILENCE, TONE, SILENCE]
+    FakeCapture.script = [TONE, SILENCE]
     FakeCapture.delay = 0.0
     FakeEngine.texts = []
     FakeEngine.delay = 0.0
@@ -154,6 +154,7 @@ def _captioner(engine=None, translator=None):
         engine_provider=lambda config: engine,
         translation_provider=(lambda config: translator) if translator else None,
         capture_factory=FakeCapture,
+        speech_detector_factory=None,  # tones test plumbing, not neural speech detection
     )
 
 
@@ -225,7 +226,7 @@ def test_transcription_only_when_no_target_language(qt_app):
 def test_translation_context_is_passed_and_grows(qt_app):
     # Two pending translations fit the bounded queue regardless of scheduling.
     FakeCapture.script = [TONE, SILENCE, TONE, SILENCE]
-    FakeEngine.texts = ["one", "two"]
+    FakeEngine.texts = ["one.", "two."]
     translator = FakeTranslator()
     captioner = _captioner(translator=translator)
 
@@ -235,7 +236,7 @@ def test_translation_context_is_passed_and_grows(qt_app):
 
     assert translator.contexts[0] == []  # first line has no history
     assert len(translator.contexts) >= 2
-    assert translator.contexts[1][0][0] == "one"  # previous source line carried forward
+    assert translator.contexts[1][0][0] == "one."  # previous source sentence carried forward
 
 
 def test_stop_is_asynchronous(qt_app):

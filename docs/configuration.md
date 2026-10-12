@@ -19,15 +19,36 @@ Advanced Mode. Hiding Advanced Mode never resets values, providers or credential
 | Save my transcripts | Off by default; explicit preferences are preserved |
 
 Phrase duration is a maximum, not a promised latency. Speech pauses can finish a caption sooner;
-inference and translation add their own time. Overloaded queues drop older phrases to stay live.
+inference and translation add their own time. A forced boundary can show a tentative source caption
+and correct it under the same ID after 0.6 seconds of future audio and another decode. Translation
+uses finalized source text and can revise an incomplete clause when its continuation arrives.
+Overloaded queues drop older phrases to stay live; Diagnostics exposes these losses.
 
 Choosing a profile also restores automatic device/precision and clears an exact-model override.
 A profile change is intentional; an Advanced Mode toggle has no such effect.
 
+## Models and languages
+
+**Speech models** is available without Advanced Mode. The quality cards recommend a sensible
+starting point; expand the catalogue for exact models, approximate download sizes, language
+coverage and hardware compatibility. **Install** downloads and verifies files without changing
+your selected model. **Use model** explicitly selects and loads an installed model. Progress,
+cancellation, resume and retry are shown in the catalogue and on Live. Cancellation may finish
+the current native transfer before stopping; incomplete or unverified downloads remain unavailable.
+
+Live shows the model actually loaded: Loading, Ready or Active. A different selected model is
+shown separately. A failed switch restores the previous model when possible and explains the
+fallback. Only one local speech model remains in memory.
+
+Language selectors open a searchable list of names with the current selection marked. Use
+the arrow keys and Enter, or click a language. Unsupported input languages are disabled for
+the selected model. Automatic detection is offered where supported. Changes reconnect a running
+session safely; Live reports the language configuration used by that session.
+
 ## Advanced categories
 
-**Models & providers** manages exact Whisper/Parakeet models, downloads, vocabulary hints,
-translation fallback order and optional transcript assistance. **Engine & performance** exposes
+**Translation providers** manages translation fallback order and optional transcript assistance.
+Vocabulary hints are in Speech models. **Transcription & performance** exposes
 device, precision, beam size, CPU threads, maximum phrase length and silence duration.
 These changes reconnect a running session after the previous workers finish.
 Device, precision and beam size apply to Whisper; Parakeet uses CPU/int8 and
@@ -36,7 +57,7 @@ no automatic language detection: select the input language when translating.
 Automatic CPU threads leave about half the physical cores for playback and other apps.
 The warm-model timer releases speech RAM/VRAM two minutes after stopping by default.
 Set it to zero for immediate release or up to 30 minutes for quicker repeated starts.
-Downloaded model files remain on disk until you remove them in Models & providers.
+Downloaded model files remain on disk until you remove them in Speech models.
 
 **Remote processing** keeps local speech as the default. A remote choice needs a validated
 URL, server model and explicit consent for that address. Keys use the OS credential store.
@@ -46,14 +67,19 @@ server. A slow or unreachable server leaves a recoverable inline error.
 
 **Diagnostics** shows phase, queue sizes, drops and timing measurements. Copying the report
 includes no caption content, keys, server URLs or home paths. Diagnostics don't upload anything.
+Developer-only `SUBBYAI_TRACE_DIR` enables bounded local numeric stage traces. Additional
+`SUBBYAI_TRACE_CONTENT=1` explicitly records audio and intermediate text locally; leave it unset
+for content-free traces. This is separate from history preferences and normal diagnostic exports.
+See [accuracy investigation](accuracy-investigation.md#developer-diagnostics-and-reproduction).
 
 ## Subtitles and appearance
 
 The preset picker previews Clean, Cinema, Anime, Cute, Minimal, Gaming, Large text and Accessibility, plus Custom.
 Custom controls include installed font family and weight, size, original and translation colours,
 outline width, shadow, background opacity, padding, corner radius, alignment, width, caption
-history depth and a 1–8 line limit per language. Clipped overlay text ends in an ellipsis; the
-complete caption remains in the Live page and saved history when enabled.
+history depth and a 1–8 line limit per language. Long live captions page through their full text;
+corrections restart their pages. The complete caption remains in Live and saved history when enabled.
+Placement previews can still use an ellipsis. Newer speech or small screens can preempt older pages.
 Use **Make this look my own** to start customizing a built-in look, then **Save this look**
 to name it. Up to 20 saved looks retain appearance and behavior, excluding display names
 and geometry. Select a saved look to apply it immediately. Always-on-top is optional.
@@ -70,8 +96,9 @@ only successful translations. **Until I stop captioning** writes no session hist
 and clears Live when stopped; **Clear the Live transcript when I stop** works with any policy.
 These choices apply to new captions. Previously saved sessions remain until you delete them
 or retention expires. A fresh live-only installation creates no transcript database.
-Audio and temporary speech files are never written by the live pipeline, so there is no
-audio-recording toggle. Diagnostic logs contain operational events rather than captions.
+Normal live operation writes no audio or temporary speech files, so there is no audio-recording
+toggle. Developer content tracing described above is a separate, explicit recording opt-in.
+Diagnostic logs contain operational events rather than captions.
 
 Choose a display, drag the overlay in placement mode and enable click-through when ready.
 Placement uses Qt's logical screen coordinates, including displays left of or above the primary.

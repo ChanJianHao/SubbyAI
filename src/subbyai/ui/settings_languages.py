@@ -57,6 +57,10 @@ class LanguagesSection(SettingsSection):
         self.show_original = QCheckBox(self)
         self.show_original.toggled.connect(self._on_show_original)
         self.original_row = languages.add_row("Also show the original language", self.show_original)
+        self.language_note = QLabel("", self)
+        self.language_note.setWordWrap(True)
+        self.language_note.setObjectName("secondary")
+        languages.add(self.language_note)
         column.addWidget(languages)
 
         # Two engines do two different jobs, and confusing them is the single
@@ -114,6 +118,14 @@ class LanguagesSection(SettingsSection):
             )
             self.on_unavailable.setCurrentIndex(max(0, index))
         self.original_row.setEnabled(self.settings.translation_enabled)
+        same = bool(
+            captions.source_language and captions.source_language == captions.target_language
+        )
+        self.language_note.setText(
+            "Spoken and subtitle languages match. SubbyAI will show the original words."
+            if same
+            else "Language changes reconnect captions automatically; no app restart is needed."
+        )
         self.sync_provider()
 
     def sync_engines(self) -> None:
@@ -156,6 +168,13 @@ class LanguagesSection(SettingsSection):
                 return
         self.mt_name.setText("Nothing set up yet")
         show_tier(self.mt_badge, None)
+
+    def set_speech_state(self, state):
+        from ..asr.catalogue import spec
+
+        entry = spec(state.model or state.requested)
+        name = entry.display if entry else state.model or state.requested or "No model loaded"
+        self.asr_name.setText(f"{name} · {state.phase.value.title()}")
 
     def sync_provider(self) -> None:
         """Name and badge the translator that will actually be tried first."""

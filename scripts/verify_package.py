@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +19,11 @@ CANDIDATES = [
 
 
 def main() -> int:
-    app = next((path for path in CANDIDATES if path.exists()), None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--executable", type=Path)
+    parser.add_argument("--expected-commit", help="Require this exact clean source revision")
+    options, forwarded = parser.parse_known_args()
+    app = options.executable or next((path for path in CANDIDATES if path.exists()), None)
     if app is None:
         print("Build the app first — no packaged binary found in dist/")
         return 1
@@ -26,9 +31,10 @@ def main() -> int:
     print(f"Checking {app}")
     try:
         result = subprocess.run(
-            [str(app), "--self-check", *sys.argv[1:]],
+            [str(app), "--self-check", *forwarded],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=300,
         )
     except subprocess.TimeoutExpired as exc:
@@ -41,7 +47,15 @@ def main() -> int:
     print(result.stdout.strip())
     if result.stderr.strip():
         print(result.stderr.strip(), file=sys.stderr)
-    ok = result.returncode == 0
+    reported = any(line.startswith("SELF-CHECK OK") for line in result.stdout.splitlines())
+    ok = result.returncode == 0 and reported
+    if options.expected_commit:
+        identity = f"Build source: {options.expected_commit} (clean)"
+        if identity not in result.stdout.splitlines():
+            print("PACKAGE: source revision mismatch or uncommitted build input")
+            ok = False
+    if not reported:
+        print("PACKAGE: missing diagnostic completion report")
     print("PACKAGE:", "OK" if ok else "BROKEN")
     return 0 if ok else 1
 

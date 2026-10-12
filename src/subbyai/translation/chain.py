@@ -141,9 +141,9 @@ class TranslationChain:
                 failure = str(exc)
                 self._fail(provider, breaker, failure)
                 continue
-            except Exception:
+            except Exception as exc:
                 # A provider bug is still just a failed line; captions go on.
-                log.exception("Provider %s raised an unexpected error", provider.id)
+                log.warning("Provider %s raised %s", provider.id, type(exc).__name__)
                 failure = f"{provider.label} hit an unexpected error."
                 self._fail(provider, breaker, failure)
                 continue
@@ -170,10 +170,9 @@ class TranslationChain:
         breaker.record_failure(self.clock(), self.FAILURE_THRESHOLD, self.COOLDOWN_SECONDS)
         self._note_error(provider, message)
         log.warning(
-            "Translation via %s failed (%d in a row): %s",
+            "Translation via %s failed (%d in a row)",
             provider.id,
             breaker.consecutive_failures,
-            message,
         )
 
     def _note_error(self, provider: TranslationProvider, message: str) -> None:

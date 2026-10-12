@@ -1,7 +1,7 @@
 ![SubbyAI — Your world, subtitled. Live subtitles for anime, dramas and games.](docs/images/hero.png)
 
 <p align="center">
-  <a href="https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-Setup-1.0.0.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-Setup-1.0.1.exe"><strong>Download for Windows</strong></a>
   · <a href="https://github.com/ChanJianHao/SubbyAI/releases">All downloads</a>
   · <a href="docs/installation-windows.md">Getting started</a>
 </p>
@@ -16,7 +16,7 @@ for conversations, lectures, interviews and language practice.
 Local speech recognition and translation are the defaults. No account, subscription
 or API key is needed for local use. Download your models once, then watch offline.
 
-> **Windows V1.0.0 · Free & open source · No account needed.** The Windows build
+> **Windows V1.0.1 · Free & open source · No account needed.** The Windows build
 > is unsigned, so SmartScreen may ask you to confirm the download. See the
 > [installation guide](docs/installation-windows.md). macOS is supported from source;
 > packaged macOS downloads require separate platform validation.
@@ -25,8 +25,8 @@ or API key is needed for local use. Download your models once, then watch offlin
 
 ## Start watching
 
-1. Get the [Windows installer](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-Setup-1.0.0.exe)
-   or [portable ZIP](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.0/SubbyAI-portable-win-x64.zip).
+1. Get the [Windows installer](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-Setup-1.0.1.exe)
+   or [portable ZIP](https://github.com/ChanJianHao/SubbyAI/releases/download/v1.0.1/SubbyAI-portable-win-x64.zip).
 2. Open SubbyAI. Setup recommends a model for your computer and lets you test the audio meter.
 3. Choose **System audio** for playback or **Microphone** for conversations and lectures,
    then choose the language you'll hear and your subtitle language.
@@ -49,7 +49,9 @@ memory. Recommendations leave room for other apps; they don't promise a particul
 
 ![Everyday settings](docs/images/settings-light.png)
 
-Enable **Advanced Mode** for exact engines, CPU/GPU selection, precision, phrase timing,
+Open **Speech models** to install and explicitly activate an exact model; Live shows which
+model is actually processing captions. Language selectors are searchable. Enable **Advanced Mode**
+for CPU/GPU selection, precision, phrase timing,
 translation providers, a remote speech server, shortcuts and diagnostics. Turning it off
 preserves all your settings. Technical changes show as **Custom** until you choose a profile.
 
@@ -108,7 +110,8 @@ context. Translation is configured separately from speech recognition. See
 ## Privacy you can see
 
 - Local live audio stays in memory. Remote speech sends short WAV buffers from memory
-  to the server you explicitly allow; the live pipeline does not write recordings.
+  to the server you explicitly allow; normal live operation does not write recordings.
+  Developer content tracing is a separate explicit recording opt-in.
 - Downloading speech models contacts Hugging Face. Translation setup contacts the pinned
   Argos catalog on GitHub and the official language-pack host.
 - No telemetry, automatic crash uploads or user account.
@@ -143,6 +146,8 @@ test instructions are in [development](docs/development.md).
 
 [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md) ·
 [Architecture](docs/architecture.md) · [Release process](docs/release.md) ·
+[Accuracy investigation and evaluation](docs/accuracy-investigation.md) ·
+[1.0.1 verification](docs/release-verification-1.0.1.md) ·
 [V1 release notes](docs/release-notes-v1.0.0.md) · [Contributing](CONTRIBUTING.md)
 
 SubbyAI is [MIT licensed](LICENSE). Dependency, model and artwork

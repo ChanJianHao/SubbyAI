@@ -28,7 +28,7 @@ class EngineSection(SettingsSection):
         self.controls = {}
         inference = Group(
             "Recognition",
-            "Model selection and downloads are in Models & providers. "
+            "Model selection and downloads are in Speech models. "
             "Device, precision and beam size apply to Whisper. Parakeet uses CPU/int8.",
         )
         for name, label, options in (

@@ -223,6 +223,7 @@ class _ColourButton(QPushButton):
 
 
 class CaptionsSection(SettingsSection):
+    position_reset_requested = Signal()
     """Preset cards, the custom editor, and how captions come and go."""
 
     style_changed = Signal()
@@ -641,3 +642,4 @@ class CaptionsSection(SettingsSection):
         """Forget every remembered position, on every display."""
         self.settings.overlay.geometry.clear()
         self._changed()
+        self.position_reset_requested.emit()

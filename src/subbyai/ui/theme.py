@@ -223,7 +223,7 @@ def stylesheet(c: Palette) -> str:
     QPushButton#primary {{
         background: {c.accent};
         color: {c.accent_on};
-        border: none;
+        border: 2px solid transparent;
         border-radius: {RADIUS["full"]}px;
         padding: 12px 28px;
         font-size: 14px;
@@ -231,6 +231,8 @@ def stylesheet(c: Palette) -> str:
     }}
     QPushButton#primary:hover {{ background: {c.accent_hover}; }}
     QPushButton#primary:pressed {{ background: {c.accent_pressed}; }}
+    QPushButton#primary:focus {{ border-color: {c.focus}; }}
+    QPushButton#primary:disabled {{ background: {c.raised}; color: {c.text_disabled}; }}
     QPushButton#danger {{ color: {c.error}; border-color: {c.error}; }}
     QPushButton#quiet {{
         background: transparent;
@@ -250,6 +252,11 @@ def stylesheet(c: Palette) -> str:
         background: {c.accent_subtle};
         border-color: {c.accent};
         color: {c.text};
+    }}
+    QPushButton#chip[overlayControl="true"]:checked {{
+        background: {c.accent};
+        color: {c.accent_on};
+        border-color: {c.accent};
     }}
     QPushButton#segment {{
         background: transparent;

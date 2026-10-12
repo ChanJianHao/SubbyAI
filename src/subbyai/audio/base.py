@@ -24,6 +24,16 @@ log = logging.getLogger(__name__)
 # real-time thread: copy what you keep, and do no work beyond a buffer write.
 AudioCallback = Callable[[np.ndarray, int], None]
 
+
+def report_capture_gap(callback: AudioCallback, seconds: float = 0.0) -> None:
+    """Preserve the two-argument capture API and report driver discontinuities."""
+    owner = getattr(callback, "__self__", None)
+    hook = getattr(owner, "note_capture_gap", None)
+    if hook is not None:
+        hook(seconds)
+    log.warning("Capture discontinuity (known gap %.4f seconds)", seconds)
+
+
 # Fired when the set of capture devices — or which one is default — changed.
 DeviceChangeCallback = Callable[[], None]
 

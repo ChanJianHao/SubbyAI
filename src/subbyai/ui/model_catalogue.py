@@ -27,12 +27,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..asr.catalogue import ModelSpec, all_specs, spec
+from ..asr.models import DownloadProgress
 from ..core.settings import TIER_MODELS, QualityTier
 from . import theme
 from .exports import human_bytes
@@ -57,12 +59,34 @@ def language_text(model: ModelSpec) -> str:
     return _LANGUAGE_TEXT.get(model.languages, model.languages)
 
 
+def installation_text(model_id: str, progress: DownloadProgress) -> str:
+    model = spec(model_id)
+    name = model.display if model else "Speech model"
+    if progress.phase == "downloading":
+        if progress.total_bytes:
+            return (
+                f"Downloading {name} — {progress.fraction:.0%} — "
+                f"{human_bytes(progress.downloaded_bytes)} / "
+                f"about {human_bytes(progress.total_bytes)}"
+            )
+        return f"Downloading {name} — {human_bytes(progress.downloaded_bytes)}"
+    return {
+        "checking": f"Starting download — {name}…",
+        "verifying": f"Verifying model files — {name}…",
+        "done": f"Installed — {name}. Choose Use model to load it.",
+        "cancelled": "Download cancelled. Retry to resume the partial download.",
+        "cancelling": "Cancelling… Finishing the current transfer. Partial files can be resumed.",
+        "error": progress.message or "Download failed. Check your connection and retry.",
+    }.get(progress.phase, progress.message)
+
+
 class ModelRow(QFrame):
     """One model: what it is good at, what it costs, and what you can do to it."""
 
     use_requested = Signal(str)
     install_requested = Signal(str)
     remove_requested = Signal(str)
+    cancel_requested = Signal()
 
     def __init__(self, model: ModelSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -90,17 +114,27 @@ class ModelRow(QFrame):
         text.addWidget(self._blurb)
         text.addWidget(self._facts)
         text.addWidget(self._credit)
+        self.status = wrap_label(QLabel("", self))
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        text.addWidget(self.status)
+        self.progress = QProgressBar(self)
+        self.progress.hide()
+        text.addWidget(self.progress)
         row.addLayout(text, 1)
 
         actions = QVBoxLayout()
         actions.setSpacing(SPACE["xs"])
         actions.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.use_button = QPushButton("Use", self)
+        self.use_button = QPushButton("Use model", self)
         self.use_button.clicked.connect(lambda: self.use_requested.emit(model.id))
         self.install_button = QPushButton("Install", self)
         self.install_button.clicked.connect(lambda: self.install_requested.emit(model.id))
         self.remove_button = QPushButton("Remove", self)
         self.remove_button.clicked.connect(lambda: self.remove_requested.emit(model.id))
+        self.cancel_button = QPushButton("Cancel download", self)
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        self.cancel_button.hide()
+        actions.addWidget(self.cancel_button)
         for button in (self.use_button, self.install_button, self.remove_button):
             button.setMinimumWidth(96)
             actions.addWidget(button)
@@ -108,9 +142,61 @@ class ModelRow(QFrame):
 
         self.refresh_theme()
 
+    def set_operation(self, progress=None, *, busy=False, selected=False, runtime=None):
+        self.progress.hide()
+        self.cancel_button.hide()
+        self.install_button.setEnabled(not busy)
+        self.use_button.setEnabled(not busy)
+        self.remove_button.setEnabled(not busy)
+        if runtime and runtime.phase.value == "loading":
+            self.use_button.setEnabled(False)
+            self.remove_button.setEnabled(False)
+        self.install_button.setText("Install")
+        self.use_button.setText("Use model")
+        self.status.setText(
+            "Active" if self._in_use else "Installed" if self._installed else "Not installed"
+        )
+        if selected:
+            self.status.setText(self.status.text() + " · Selected")
+        if runtime and runtime.requested == self.model.id and runtime.phase.value == "loading":
+            self.status.setText("Loading model…")
+            self.use_button.setText("Loading…")
+            self.use_button.setEnabled(False)
+        if runtime and runtime.model == self.model.id and runtime.phase.value == "ready":
+            self.status.setText("Ready · Loaded in memory")
+        if progress is not None and not (
+            progress.phase == "done" and runtime and runtime.model == self.model.id
+        ):
+            if progress.phase == "done" and self._in_use:
+                return
+            self.status.setText(installation_text(self.model.id, progress))
+            working = progress.phase in ("checking", "downloading", "verifying", "cancelling")
+            self.install_button.setVisible(working or not self._installed)
+            self.install_button.setEnabled(not working and not busy)
+            self.install_button.setText(
+                {
+                    "checking": "Starting…",
+                    "downloading": "Downloading…",
+                    "verifying": "Verifying…",
+                    "cancelling": "Cancelling…",
+                    "error": "Retry",
+                    "cancelled": "Resume",
+                }.get(progress.phase, "Install")
+            )
+            self.cancel_button.setVisible(working)
+            self.cancel_button.setEnabled(progress.phase != "cancelling")
+            self.progress.setVisible(working)
+            self.progress.setRange(0, 100 if progress.phase == "downloading" else 0)
+            self.progress.setValue(round(progress.fraction * 100))
+        if runtime and runtime.requested == self.model.id and runtime.message:
+            self.status.setText(f"{runtime.phase.value.title()} · {runtime.message}")
+            if runtime.phase.value == "failed" or runtime.model != runtime.requested:
+                self.use_button.setText("Retry loading")
+
     def set_state(self, installed: bool, in_use: bool, disk_bytes: int = 0) -> None:
         self._installed, self._in_use = installed, in_use
         facts = [language_text(self.model)]
+        facts.append("CPU" if self.model.provider == "onnx-asr" else "CPU / NVIDIA GPU")
         if installed:
             facts.append(f"{human_bytes(disk_bytes or self.model.size_bytes)} on disk")
         else:
@@ -132,7 +218,7 @@ class ModelRow(QFrame):
         self.use_button.setVisible(installed and not in_use)
         # The model in use has no Remove: the engine holds it open, and an
         # offer that always fails is worse than no offer.
-        self._name.setText(f"{self.model.display} — in use" if in_use else self.model.display)
+        self._name.setText(f"{self.model.display} — Active" if in_use else self.model.display)
         self.refresh_theme()
 
     def refresh_theme(self) -> None:
@@ -152,6 +238,7 @@ class ModelCatalogue(QWidget):
     tier_restored = Signal()
     install_requested = Signal(str)
     remove_requested = Signal(str)
+    cancel_requested = Signal()
 
     def __init__(
         self,
@@ -162,15 +249,18 @@ class ModelCatalogue(QWidget):
         super().__init__(parent)
         self._models = models
         self._active_model = active_model or (lambda: "")
+        self.downloads = None
+        self.runtime = None
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
 
         self.group = Group(
-            "Choose a specific engine",
+            "Speech models",
             "Every engine here runs on your computer. None of them needs an "
-            "account or an internet connection once installed.",
+            "account or an internet connection once installed. Install downloads files; "
+            "Use model loads your choice. Only one speech model stays in memory.",
         )
         self.anchor = wrap_label(QLabel("", self))
         self.anchor.setObjectName("secondary")
@@ -185,6 +275,7 @@ class ModelCatalogue(QWidget):
             row.use_requested.connect(self.model_chosen.emit)
             row.install_requested.connect(self.install_requested.emit)
             row.remove_requested.connect(self.remove_requested.emit)
+            row.cancel_requested.connect(self.cancel_requested.emit)
             self.rows[model.id] = row
             self.group.add(row)
 
@@ -203,6 +294,12 @@ class ModelCatalogue(QWidget):
             on_disk = self._disk_bytes(model_id) if installed else 0
             total += on_disk
             row.set_state(installed, model_id == active, on_disk)
+            row.set_operation(
+                self.downloads.progress.get(model_id) if self.downloads else None,
+                busy=bool(self.downloads and self.downloads.busy),
+                selected=model_id == (override or TIER_MODELS[quality or QualityTier.BALANCED][0]),
+                runtime=self.runtime,
+            )
         self._show_anchor(override, quality)
         self.storage.setText(
             f"Speech engines are using {human_bytes(total)}."
@@ -216,13 +313,12 @@ class ModelCatalogue(QWidget):
         if not override:
             model = spec(TIER_MODELS[tier][0])
             engine = model.display if model else TIER_MODELS[tier][0]
-            self.anchor.setText(f"Currently using {name} — {engine}.")
+            self.anchor.setText(f"Selected: {name} — {engine}.")
             self.back_button.setVisible(False)
             return
         chosen = spec(override)
         self.anchor.setText(
-            f"Currently using {chosen.display if chosen else override}, "
-            f"chosen here instead of {name}."
+            f"Selected: {chosen.display if chosen else override}, chosen here instead of {name}."
         )
         self.back_button.setText(f"Back to {name}")
         self.back_button.setVisible(True)

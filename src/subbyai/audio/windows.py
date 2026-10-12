@@ -20,6 +20,7 @@ from .base import (
     AudioDevice,
     DeviceChangeCallback,
     DevicePoller,
+    report_capture_gap,
     resolve_device,
 )
 
@@ -100,9 +101,19 @@ class WasapiLoopbackCapture(AudioCapture):
             self._pa = pyaudio.PyAudio()
             channels = device.channels
             rate = device.sample_rate
+            expected_adc = None
 
             def _on_block(in_data, frame_count, time_info, status_flags):
-                samples = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
+                nonlocal expected_adc
+                adc = float(time_info.get("input_buffer_adc_time", 0.0))
+                gap = max(0.0, adc - expected_adc) if adc > 0 and expected_adc else 0.0
+                expected_adc = adc + frame_count / rate if adc > 0 else None
+                if status_flags or gap > 0.05:
+                    report_capture_gap(callback, gap if gap > 0.05 else 0.0)
+                if in_data is None or len(in_data) != frame_count * channels * 2:
+                    report_capture_gap(callback, frame_count / rate)
+                    return (None, pyaudio.paContinue)
+                samples = np.frombuffer(in_data, dtype="<i2").astype(np.float32)
                 samples *= _INT16_SCALE
                 try:
                     callback(samples.reshape(-1, channels), rate)

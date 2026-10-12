@@ -17,6 +17,7 @@ from .base import (
     AudioCaptureError,
     AudioDevice,
     DevicePoller,
+    report_capture_gap,
     resolve_device,
 )
 
@@ -73,10 +74,15 @@ class CoreAudioInputCapture(AudioCapture):
                 assert device is not None
 
             rate = device.sample_rate
+            expected_adc = None
 
             def _on_block(indata, frames, time_info, status) -> None:
-                if status:
-                    log.debug("Audio stream status: %s", status)
+                nonlocal expected_adc
+                adc = float(time_info.inputBufferAdcTime)
+                gap = max(0.0, adc - expected_adc) if adc > 0 and expected_adc else 0.0
+                expected_adc = adc + frames / rate if adc > 0 else None
+                if status or gap > 0.05:
+                    report_capture_gap(callback, gap if gap > 0.05 else 0.0)
                 # sounddevice already hands us float32; the consumer copies, so
                 # this stays a view and the real-time thread allocates nothing.
                 try:

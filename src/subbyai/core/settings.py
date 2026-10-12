@@ -21,7 +21,9 @@ import math
 import os
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -288,6 +290,12 @@ class SettingsStore:
         self._listeners: list[Callable[[str], None]] = []
         self._error_listeners: list[Callable[[str], None]] = []
         self.last_save_error = ""
+        self._save_guard = threading.Lock()
+        self._write_guard = threading.Lock()
+        self._save_generation = 0
+        self._written_generation = 0
+        self._pending_save = None
+        self._save_worker = None
         self.settings = self._load()
 
     # ---------- access ----------
@@ -299,9 +307,10 @@ class SettingsStore:
     def subscribe(self, listener: Callable[[str], None]) -> None:
         self._listeners.append(listener)
 
-    def notify(self, section: str) -> None:
+    def notify(self, section: str, *, persist: bool = True) -> None:
         """Announce that a section changed, then persist."""
-        self.try_save()
+        if persist:
+            self.try_save()
         for listener in list(self._listeners):
             try:
                 listener(section)
@@ -360,7 +369,81 @@ class SettingsStore:
         return from_dict(Settings, raw)
 
     def save(self) -> None:
-        self._write(self.settings)
+        generation, snapshot = self._save_snapshot()
+        self._write_snapshot(generation, snapshot)
+
+    def _save_snapshot(self):
+        # Called by the owner thread; a worker never reads mutable preferences.
+        snapshot = deepcopy(self.settings)
+        with self._save_guard:
+            self._save_generation += 1
+            return self._save_generation, snapshot
+
+    def _write_snapshot(self, generation, snapshot):
+        with self._write_guard:
+            if generation < self._written_generation:
+                return
+            self._write(snapshot)
+            self._written_generation = generation
+
+    def save_async(self, finished: Callable[[int, bool], None]) -> None:
+        """Coalesce rapid preference changes on one temporary writer thread.
+
+        ``finished`` must dispatch back to the owner (for example a Qt signal).
+        This method performs no disk I/O; queued snapshots cannot overwrite newer
+        synchronous saves. ``flush_pending`` belongs on shutdown's worker thread.
+        """
+        generation, snapshot = self._save_snapshot()
+        with self._save_guard:
+            self._pending_save = generation, snapshot, finished
+            if self._save_worker is None:
+                self._save_worker = threading.Thread(
+                    target=self._save_pending, name="subbyai-settings-writer", daemon=True
+                )
+                self._save_worker.start()
+
+    def _save_pending(self):
+        while True:
+            with self._save_guard:
+                job, self._pending_save = self._pending_save, None
+                if job is None:
+                    self._save_worker = None
+                    return
+            generation, snapshot, finished = job
+            ok = True
+            try:
+                self._write_snapshot(generation, snapshot)
+            except OSError:
+                ok = False
+            # A closing GUI may already have released its signal owner.
+            with contextlib.suppress(RuntimeError):
+                finished(generation, ok)
+
+    def finish_async_save(self, generation: int, ok: bool) -> None:
+        """Deliver save failures on the owner's thread, ignoring stale results."""
+        if generation != self._save_generation:
+            return
+        self.last_save_error = (
+            ""
+            if ok
+            else (
+                "Your changes work for this session, but couldn't be saved. "
+                "Check free disk space and access to your settings folder."
+            )
+        )
+        if not ok:
+            for listener in list(self._error_listeners):
+                try:
+                    listener(self.last_save_error)
+                except Exception:
+                    log.exception("Settings error listener failed")
+
+    def flush_pending(self, timeout: float | None = None) -> bool:
+        with self._save_guard:
+            worker = self._save_worker
+        if worker is not None:
+            worker.join(timeout)
+        return worker is None or not worker.is_alive()
 
     def _write(self, settings: Settings) -> None:
         settings.schema_version = SCHEMA_VERSION

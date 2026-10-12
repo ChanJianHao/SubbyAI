@@ -71,6 +71,21 @@ def test_wizard_advances_and_goes_back(make_wizard):
     assert wizard.current_index == 0
 
 
+def test_enter_finishes_setup_without_native_default_button_decoration(make_wizard):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    wizard = make_wizard()
+    wizard._show_step(_last_index(wizard))
+    started = []
+    wizard.finished_setup.connect(started.append)
+    wizard.show()
+    assert not wizard._primary.isDefault()
+    QTest.keyClick(wizard._primary, Qt.Key.Key_Return)
+    assert started == [True]
+
+
+
 def test_skipping_from_welcome_leaves_usable_defaults(make_wizard):
     settings = Settings()
     wizard = make_wizard(settings)
@@ -215,6 +230,21 @@ def test_start_captions_emits_true(make_wizard):
 
     assert seen == [True]
     assert settings.general.onboarding_complete is True
+
+
+def test_ready_start_button_has_its_style_height_at_compact_sizes(make_wizard, qt_app):
+    from subbyai.ui import theme
+
+    for scale in (1.0, 1.5, 2.0):
+        theme.apply(qt_app, "dark", text_scale=scale, reduce_motion=True)
+        wizard = make_wizard()
+        wizard._show_step(_last_index(wizard))
+        wizard.resize(560, 420)
+        wizard.show()
+        qt_app.processEvents()
+        assert wizard._primary.height() >= wizard._primary.sizeHint().height()
+        assert wizard.rect().contains(wizard._primary.geometry())
+    theme.apply(qt_app, "system", text_scale=1.0)
 
 
 def test_open_the_app_first_emits_false(make_wizard):

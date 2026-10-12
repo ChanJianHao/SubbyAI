@@ -11,16 +11,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QScreen
 from PySide6.QtWidgets import (
     QComboBox,
-    QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
     QLayoutItem,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -246,21 +248,104 @@ class LanguagePicker(QComboBox):
 
     def __init__(self, entries: Sequence[tuple[str, str]], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setEditable(True)
+        self.setEditable(False)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         # Wide enough to read a language name, narrow enough that two of these
         # in one settings pane do not set the window's minimum width.
         self.setMinimumWidth(160)
         compact_combo(self, chars=14)
-        for code, name in entries:
+        self._supported = None
+        self._auto_supported = True
+        for code, name in dict(entries).items():
             self.addItem(name, code)
-        completer = QCompleter([name for _, name in entries], self)
-        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.setCompleter(completer)
-        self.lineEdit().setPlaceholderText("Type to search")
+        self._popup = QFrame(self, Qt.WindowType.Popup)
+        self._popup.setObjectName("card")
+        layout = QVBoxLayout(self._popup)
+        self.search = QLineEdit(self._popup)
+        self.search.setPlaceholderText("Search languages…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setAccessibleName("Search languages")
+        layout.addWidget(self.search)
+        self.results = QListWidget(self._popup)
+        self.results.setAccessibleName("Languages")
+        layout.addWidget(self.results)
+        self.search.textChanged.connect(self._filter_languages)
+        self.search.installEventFilter(self)
+        self.results.itemActivated.connect(self._pick_language)
+        self.results.itemClicked.connect(self._pick_language)
         self.currentIndexChanged.connect(self._announce)
-        self.lineEdit().editingFinished.connect(self._settle)
+
+    def set_supported(self, codes=None, *, auto_detect=True):
+        self._supported = codes
+        self._auto_supported = auto_detect
+
+    def showPopup(self) -> None:
+        self.search.clear()
+        self._filter_languages("")
+        area = self.screen().availableGeometry()
+        width = min(
+            area.width(),
+            max(
+                self.width(),
+                self.fontMetrics().horizontalAdvance("Chinese · unsupported by this model") + 48,
+            ),
+        )
+        height = min(round(self.fontMetrics().height() * 16), area.height())
+        point = self.mapToGlobal(QPoint(0, self.height()))
+        rect = QRect(point, QSize(width, height))
+        from .overlay_geometry import clamp_rect
+
+        self._popup.setGeometry(clamp_rect(rect, area))
+        self._popup.show()
+        self.search.setFocus()
+
+    def hidePopup(self) -> None:
+        self._popup.hide()
+
+    def _filter_languages(self, query):
+        self.results.clear()
+        selected = self.current_code()
+        for index in range(self.count()):
+            name, code = self.itemText(index), self.itemData(index)
+            if query.casefold() not in (name + " " + code).casefold():
+                continue
+            supported = (
+                self._auto_supported
+                if not code
+                else self._supported is None or code in self._supported
+            )
+            item = QListWidgetItem(("✓ " if code == selected else "") + name)
+            item.setData(Qt.ItemDataRole.UserRole, code)
+            if not supported:
+                item.setText(item.text() + " · unsupported by this model")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self.results.addItem(item)
+            if code == selected and supported:
+                self.results.setCurrentItem(item)
+        if self.results.currentRow() < 0:
+            for index in range(self.results.count()):
+                if self.results.item(index).flags() & Qt.ItemFlag.ItemIsEnabled:
+                    self.results.setCurrentRow(index)
+                    break
+
+    def _pick_language(self, item):
+        if item and item.flags() & Qt.ItemFlag.ItemIsEnabled:
+            self.set_code(item.data(Qt.ItemDataRole.UserRole))
+            self.hidePopup()
+            self.setFocus()
+
+    def eventFilter(self, watched, event):
+        if watched is self.search and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                self.results.setFocus()
+                return True
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._pick_language(self.results.currentItem())
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self.hidePopup()
+                return True
+        return super().eventFilter(watched, event)
 
     def current_code(self) -> str:
         return str(self.currentData() or "")
@@ -274,14 +359,6 @@ class LanguagePicker(QComboBox):
 
     def _announce(self, index: int) -> None:
         self.code_changed.emit(str(self.itemData(index) or ""))
-
-    def _settle(self) -> None:
-        """Half-typed text must never leave the field claiming another language."""
-        index = self.findText(self.lineEdit().text(), Qt.MatchFlag.MatchFixedString)
-        if index < 0:
-            self.setEditText(self.itemText(self.currentIndex()))
-        elif index != self.currentIndex():
-            self.setCurrentIndex(index)
 
 
 class Card(QFrame):
@@ -357,8 +434,12 @@ class Card(QFrame):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if (self._pressed and self.isEnabled() and event.button() == Qt.MouseButton.LeftButton
-                and self.rect().contains(event.position().toPoint())):
+        if (
+            self._pressed
+            and self.isEnabled()
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
             self.clicked.emit()
         self._pressed = False
         super().mouseReleaseEvent(event)

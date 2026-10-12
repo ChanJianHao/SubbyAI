@@ -1,4 +1,10 @@
 # Compile with the hash-pinned, publisher-signed Inno Setup distribution.
+param(
+    [string] $AppDirectory = '',
+    [string] $OutputDirectory = '',
+    [string] $PythonExecutable = './.venv/Scripts/python.exe'
+)
+
 $ErrorActionPreference = 'Stop'
 $subbyRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $subbyRoot
@@ -34,7 +40,20 @@ if (-not (Test-Path -LiteralPath $subbyCompiler)) {
 if (-not (Test-SubbyPublisher $subbyCompiler)) {
     throw 'The installed compiler failed its publisher signature check.'
 }
-$subbyVersion = & './.venv/Scripts/python.exe' -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+$subbyVersion = & $PythonExecutable -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
 if ($LASTEXITCODE -ne 0) { throw 'Could not read the application version.' }
-& $subbyCompiler /Qp "/DAppVersion=$subbyVersion" 'packaging/windows/installer.iss'
+$subbyDefines = @('/Qp', "/DAppVersion=$subbyVersion")
+if ($AppDirectory) {
+    $subbyAppPath = (Resolve-Path -LiteralPath $AppDirectory).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $subbyAppPath 'SubbyAI.exe'))) {
+        throw 'The specified application bundle is incomplete.'
+    }
+    $subbyDefines += "/DAppSourceDir=$subbyAppPath"
+}
+if ($OutputDirectory) {
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $subbyOutputPath = (Resolve-Path -LiteralPath $OutputDirectory).Path
+    $subbyDefines += "/DReleaseOutputDir=$subbyOutputPath"
+}
+& $subbyCompiler @subbyDefines 'packaging/windows/installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Windows installer compilation failed.' }

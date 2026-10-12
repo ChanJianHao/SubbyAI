@@ -81,6 +81,9 @@ class _FakeCaptioner:
     def wait(self, timeout=0):
         return True
 
+    def record_rendered(self, segment, **kwargs):
+        pass
+
 
 def _segment(text="hello", translation=None):
     seg = CaptionSegment(text=text, language="ja", audio_duration=1.0)
@@ -94,6 +97,19 @@ def test_surfaces_are_registered_in_order(controller):
     assert controller.shell.current_segment == 0  # Live is the default destination
 
 
+def test_tray_open_restores_minimized_window_without_restarting_captioning(controller, qt_app):
+    from PySide6.QtTest import QTest
+
+    controller.shell.showMinimized()
+    qt_app.processEvents()
+    assert controller.shell.isMinimized()
+    controller.tray._open_action.trigger()
+    QTest.qWait(30)
+    assert controller.shell.isVisible() and not controller.shell.isMinimized()
+    assert controller.captioner.started == 0
+    assert controller.captioner.stopped_count == 0
+
+
 def test_caption_reaches_overlay_live_and_history(controller):
     controller.settings.history.enabled = True
     controller._start_history()
@@ -101,8 +117,67 @@ def test_caption_reaches_overlay_live_and_history(controller):
 
     assert controller.live._segments[-1].text == "こんにちは"
     assert controller.overlay.visible_pairs
+    assert controller.overlay.isVisible()
     controller.sessions.flush()
     assert controller.sessions.segments(controller._session_id)[0].text == "こんにちは"
+
+
+def test_start_maps_overlay_with_default_auto_hide_and_toggle_is_live(controller):
+    assert controller.settings.overlay.auto_hide
+    controller._begin_session()
+    assert controller.overlay.isVisible()
+    controller._on_overlay_toggled(False)
+    controller._on_segment(_segment("New caption"))
+    assert not controller.overlay.isVisible()
+    controller._on_overlay_toggled(True)
+    assert controller.overlay.isVisible()
+    assert controller.overlay._ring[-1].text == "New caption"
+
+
+def test_remote_runtime_does_not_claim_a_local_model_is_selected(controller):
+    from subbyai.asr.lifecycle import SpeechPhase, SpeechState
+
+    controller.settings.processing.asr_backend = "remote"
+    controller.settings.processing.model = "server-speech"
+    controller._on_speech_state(
+        SpeechState(SpeechPhase.ACTIVE, "server-speech", "server-speech", backend="remote")
+    )
+    assert "server-speech · Active" in controller.live.speech_indicator.text()
+    assert "Selected:" not in controller.live.speech_indicator.text()
+    controller._on_stopped()
+    assert not controller._speech_state.model
+    assert "not loaded" in controller.live.speech_indicator.text()
+
+
+def test_remote_initialization_failure_leaves_a_retryable_state(controller, qt_app):
+    from subbyai.asr.engine import EngineError
+    from subbyai.asr.lifecycle import SpeechPhase
+    from subbyai.core.settings import SessionConfig
+
+    controller.settings.processing.asr_backend = "remote"
+    controller.settings.processing.model = "server-speech"
+    controller.settings.processing.base_url = "http://localhost:8000"
+    controller.settings.processing.consent_url = ""  # client must reject missing consent
+    with pytest.raises(EngineError):
+        controller._provide_engine(SessionConfig.from_settings(controller.settings))
+    qt_app.processEvents()
+    assert controller._speech_state.phase is SpeechPhase.FAILED
+    assert controller.live.start_button.isEnabled()
+
+
+def test_language_changes_reconnect_with_updated_runtime_config(controller, qt_app):
+    from PySide6.QtTest import QTest
+
+    controller._begin_session()
+    controller.settings_view.languages.hear.choose("ja")
+    assert controller._pending_restart
+    controller._on_stopped()
+    QTest.qWait(130)
+    assert controller.captioner.last_config.source_language == "ja"
+    controller.settings_view.languages.hear.choose("")
+    controller._on_stopped()
+    QTest.qWait(130)
+    assert controller.captioner.last_config.source_language == ""
 
 
 def test_translation_update_reaches_both_views(controller):
@@ -308,10 +383,12 @@ def test_unrelated_device_changes_do_not_interrupt_capture(controller, monkeypat
     controller.captioner.is_active = True
     restarts = []
     monkeypatch.setattr(controller, "_restart_capture", lambda: restarts.append(True))
-    controller._on_devices_changed([
-        replace(selected, is_default=False),
-        AudioDevice("5", "Other speakers", 48000, 2, True, True),
-    ])
+    controller._on_devices_changed(
+        [
+            replace(selected, is_default=False),
+            AudioDevice("5", "Other speakers", 48000, 2, True, True),
+        ]
+    )
     assert restarts == []
 
 

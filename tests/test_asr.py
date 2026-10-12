@@ -263,6 +263,7 @@ def test_is_downloaded_against_a_fake_cache(tmp_path):
     assert not manager.is_downloaded("small")
 
     (snapshot / "model.bin").write_bytes(b"weights")
+    _metadata(snapshot)
     assert manager.is_downloaded("small")
     assert manager.local_path("small") == snapshot
     assert not manager.is_downloaded("medium")
@@ -275,6 +276,7 @@ def test_local_path_prefers_the_revision_refs_main_points_at(tmp_path):
     for directory in (old, new):
         directory.mkdir(parents=True)
         (directory / "model.bin").write_bytes(b"w")
+        _metadata(directory)
     (root / "refs").mkdir()
     (root / "refs" / "main").write_text("old", encoding="utf-8")
     assert ModelManager(tmp_path).local_path("base") == old
@@ -284,10 +286,11 @@ def test_download_is_skipped_when_already_present(tmp_path):
     snapshot = tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "abc"
     snapshot.mkdir(parents=True)
     (snapshot / "model.bin").write_bytes(b"w")
+    _metadata(snapshot)
     events: list[DownloadProgress] = []
     ok = ModelManager(tmp_path).download("base", events.append, threading.Event())
     assert ok
-    assert [e.phase for e in events] == [models.PHASE_DONE]
+    assert [e.phase for e in events] == [models.PHASE_VERIFYING, models.PHASE_DONE]
 
 
 def test_download_refuses_without_disk_space(tmp_path, monkeypatch):
@@ -308,7 +311,14 @@ def fake_snapshot(tmp_path):
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir(exist_ok=True)
     (snapshot / "model.bin").write_bytes(b"weights")
+    _metadata(snapshot)
     return str(snapshot)
+
+
+def _metadata(snapshot):
+    """A usable speech snapshot includes its tokenizer and feature configuration."""
+    for name in ("config.json", "tokenizer.json", "preprocessor_config.json", "vocabulary.json"):
+        (snapshot / name).write_text("{}", encoding="utf-8")
 
 
 def test_download_reports_progress_and_completes(tmp_path, monkeypatch):
@@ -357,14 +367,17 @@ def test_download_counts_duplicated_hub_bars_once(tmp_path, monkeypatch):
 
 def test_download_honours_cancellation(tmp_path, monkeypatch):
     cancel = threading.Event()
-    reached_second_update = []
+    reached_next_file = []
 
     def fake_snapshot_download(repo_id, **kwargs):
         bar = kwargs["tqdm_class"](total=0, unit="B")
         bar.update(8 * 1024 * 1024)
         cancel.set()
+        # Native byte callbacks must return normally; the hub cannot abort its
+        # Rust transfer by raising in a Python progress callback.
         bar.update(8 * 1024 * 1024)
-        reached_second_update.append(True)  # must be unreachable
+        kwargs["tqdm_class"](total=0, unit="B")  # next file is refused
+        reached_next_file.append(True)  # must be unreachable
         return fake_snapshot(tmp_path)
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
@@ -372,7 +385,7 @@ def test_download_honours_cancellation(tmp_path, monkeypatch):
     ok = ModelManager(tmp_path).download("small", events.append, cancel)
 
     assert not ok
-    assert not reached_second_update
+    assert not reached_next_file
     assert events[-1].phase == models.PHASE_CANCELLED
 
 
@@ -558,12 +571,11 @@ def test_transcribe_never_asks_whisper_to_translate():
         "task": "transcribe",
         "language": "de",
         "beam_size": 1,
-        # Off on purpose. The segmenter has already located the speech, and
-        # this would trim the trailing silence that tells the decoder an
-        # utterance ended — which the shortened encoder window relies on.
         "vad_filter": False,
-        "condition_on_previous_text": False,
+        "condition_on_previous_text": True,
         "initial_prompt": None,
+        "word_timestamps": True,
+        "temperature": (0.0, 0.2, 0.4, 0.6),
     }
 
 
@@ -621,6 +633,7 @@ def _install(cache: Path, repo: str, *, blob_mb: int = 1) -> Path:
     snapshot = root / "snapshots" / "cafe1234"
     snapshot.mkdir(parents=True)
     (snapshot / "model.bin").write_bytes(b"\0" * (blob_mb * 1024 * 1024))
+    _metadata(snapshot)
     blobs = root / "blobs"
     blobs.mkdir()
     (blobs / "cafe1234").write_bytes(b"\0" * (blob_mb * 1024 * 1024))
@@ -741,6 +754,7 @@ def test_the_engine_uses_the_cache_it_was_given(tmp_path):
     snapshot = tmp_path / "models--Systran--faster-whisper-base" / "snapshots" / "abc"
     snapshot.mkdir(parents=True)
     (snapshot / "model.bin").write_bytes(b"\0")
+    _metadata(snapshot)
 
     engine = TranscriptionEngine("base", "cpu", models=ModelManager(tmp_path))
     assert engine._models.local_path("base") == snapshot

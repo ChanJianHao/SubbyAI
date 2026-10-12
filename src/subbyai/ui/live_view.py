@@ -27,7 +27,7 @@ from . import theme
 from .motion import MotionStack, reveal
 from .motion_widgets import ActivityIndicator, SmoothProgressBar
 from .tokens import SPACE
-from .widgets import FlowLayout, LevelMeter, StatusBanner, compact_combo, preset_label
+from .widgets import FlowLayout, LevelMeter, StatusBanner, compact_combo, preset_label, wrap_label
 
 #: What the user sees for each health state when no captions are on screen.
 _EMPTY_STATES = {
@@ -81,6 +81,7 @@ class LiveView(QWidget):
         self._segments: list[CaptionSegment] = []
         self._segment_blocks: dict[int, QWidget] = {}
         self._last_health = None
+        self._overlay_state = "disabled"
         self._build()
         self.set_health(HealthReport(HealthState.OFF))
         theme.subscribe(self._theme_changed)
@@ -132,6 +133,25 @@ class LiveView(QWidget):
         self.privacy_indicator.setWordWrap(True)
         self.privacy_indicator.setTextFormat(Qt.TextFormat.PlainText)
         body.addWidget(self.privacy_indicator)
+        self.speech_indicator = wrap_label(QLabel("Speech model: not loaded"))
+        self.speech_indicator.setTextFormat(Qt.TextFormat.PlainText)
+        self.speech_indicator.setObjectName("secondary")
+        speech_row = QHBoxLayout()
+        speech_row.addWidget(self.speech_indicator, 1)
+        self.models_button = QPushButton("Models")
+        self.models_button.setObjectName("chip")
+        self.models_button.clicked.connect(lambda: self.banner_action.emit("open_models"))
+        speech_row.addWidget(self.models_button)
+        body.addLayout(speech_row)
+        self.language_indicator = wrap_label(QLabel(""))
+        self.language_indicator.setObjectName("tertiary")
+        language_row = QHBoxLayout()
+        language_row.addWidget(self.language_indicator, 1)
+        self.languages_button = QPushButton("Languages")
+        self.languages_button.setObjectName("chip")
+        self.languages_button.clicked.connect(lambda: self.banner_action.emit("open_languages"))
+        language_row.addWidget(self.languages_button)
+        body.addLayout(language_row)
         self.audio_source = compact_combo(QComboBox())
         self.audio_source.setAccessibleName("Audio source")
         self.audio_source.addItem("System audio · videos, games and calls", "system")
@@ -253,6 +273,7 @@ class LiveView(QWidget):
         self.translate_chip = self._chip("", self._on_translate_toggled)
         self.original_chip = self._chip("Show original", self.show_original_toggled)
         self.overlay_chip = self._chip("Overlay", self.overlay_toggled)
+        self.overlay_chip.setProperty("overlayControl", True)
         self.click_chip = self._chip("Click-through", self.click_through_toggled)
         self.click_chip.setToolTip("Let the mouse pass through the captions")
 
@@ -314,6 +335,52 @@ class LiveView(QWidget):
             chip.blockSignals(False)
         self.original_chip.setEnabled(translating)
         self._style_chip.setText(preset_label(self._settings.overlay.preset))
+        self.set_overlay_state(self._overlay_state)
+
+    def set_overlay_state(self, state: str) -> None:
+        self._overlay_state = state
+        self.overlay_chip.setText(
+            {
+                "disabled": "Overlay off",
+                "starting": "Overlay on · Starting",
+                "downloading": "Overlay on · Downloading",
+                "stopping": "Overlay · Stopping",
+                "waiting": "Overlay on · Waiting",
+                "visible": "Overlay on",
+                "idle": "Overlay on · Idle",
+                "preview": "Overlay preview",
+                "error": "Overlay on · Error",
+            }[state]
+        )
+        self.overlay_chip.setAccessibleName(self.overlay_chip.text())
+        self.overlay_chip.update()
+
+    def set_speech_state(self, state, selected: str) -> None:
+        from ..asr.catalogue import spec
+
+        def name(model):
+            entry = spec(model)
+            return entry.display if entry else model or "None"
+
+        active = name(state.model)
+        if state.phase.value == "loading":
+            text = f"Speech model: loading {name(state.requested)}…"
+        elif state.model:
+            text = f"Speech model: {active} · {state.phase.value.title()}"
+            if state.model != selected:
+                text += f"\nSelected: {name(selected)} · not active"
+        elif state.phase.value == "failed":
+            text = f"Speech model: couldn't load {name(state.requested)}"
+        else:
+            text = f"Speech model: not loaded · Selected: {name(selected)}"
+        self.speech_indicator.setText(text)
+        source = language_name(state.source) if state.source else "Auto detect"
+        target = language_name(state.target) if state.target else "Original words"
+        self.language_indicator.setText(
+            f"Active languages: {source} → {target}"
+            if state.phase.value == "active"
+            else "Languages apply when captions start."
+        )
 
     def set_running(self, running: bool) -> None:
         self._running = running
@@ -337,10 +404,14 @@ class LiveView(QWidget):
         self._empty_body.setText(body)
         if report.state != self._last_health:
             self._last_health = report.state
-            self.mascot.set_mood({
-                HealthState.STARTING: "busy", HealthState.DOWNLOADING: "busy",
-                HealthState.LISTENING: "listening", HealthState.ERROR: "error",
-            }.get(report.state, "ready"))
+            self.mascot.set_mood(
+                {
+                    HealthState.STARTING: "busy",
+                    HealthState.DOWNLOADING: "busy",
+                    HealthState.LISTENING: "listening",
+                    HealthState.ERROR: "error",
+                }.get(report.state, "ready")
+            )
             self.activity.set_busy(report.state in (HealthState.STARTING, HealthState.DOWNLOADING))
         self.level_meter.set_level(report.level, report.state is HealthState.LISTENING)
         self._device_label.setText(
