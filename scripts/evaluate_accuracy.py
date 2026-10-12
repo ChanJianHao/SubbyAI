@@ -266,7 +266,10 @@ def main() -> None:
                 result = model.transcribe(chunk, language=hint, context=context.text)
                 text = (
                     ""
-                    if gate.should_drop(result.text, result.speech_probability, result.confidence)
+                    if gate.should_drop(
+                        result.text, result.speech_probability,
+                        result.confidence if result.confidence_known else None,
+                    )
                     else result.text
                 )
                 stitched = (reconciler.accept if item.final else reconciler.preview)(

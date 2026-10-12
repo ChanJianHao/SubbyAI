@@ -166,3 +166,34 @@ def test_failed_caption_download_clears_pending_start_and_exposes_error(controll
     assert "Error" in controller.live.overlay_chip.text()
     assert not controller.live.banner.isHidden()
     controller.store.flush_pending(2)
+
+
+@pytest.mark.parametrize("operation", ["start", "stop"])
+def test_slow_history_lifecycle_cannot_block_overlay_feedback(controller, monkeypatch, operation):
+    import contextlib
+
+    controller.settings.history.enabled = True
+    if operation == "stop":
+        controller._session_id = controller.sessions.create_session("Buffered history")
+    entered, release = threading.Event(), threading.Event()
+    connect = controller.sessions._connect
+
+    @contextlib.contextmanager
+    def slow_connection():
+        if not entered.is_set():
+            entered.set()
+            release.wait(0.6)
+        with connect() as connection:
+            yield connection
+
+    monkeypatch.setattr(controller.sessions, "_connect", slow_connection)
+    began = time.monotonic()
+    (controller._begin_session if operation == "start" else controller._on_stopped)()
+    elapsed = time.monotonic() - began
+    controller._on_overlay_toggled(False)
+    controller._on_overlay_toggled(True)
+    release.set()
+    controller.sessions.flush()
+    controller.store.flush_pending(2)
+    assert elapsed < 0.15, f"{operation} blocked UI feedback for {elapsed:.3f}s"
+    assert controller.live.overlay_chip.isChecked() and controller.overlay.isVisible()

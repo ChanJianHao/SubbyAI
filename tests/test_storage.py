@@ -230,3 +230,132 @@ def test_retention_never_deletes_the_current_session(store):
     assert store.apply_retention(1, active_session=active) == 0
     assert store.get_session(active) is not None
     assert store.apply_retention(1) == 1
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_async_lifecycle_orders_creation_corrections_retraction_and_end(store, background):
+    from dataclasses import replace
+
+    if background:
+        store.start_writer()
+    first = store.create_session_async("First", "ja", "en")
+    second = store.create_session_async("Second", "ja", "en")
+    original = _seg("mistaken name", "old translation")
+    store.add_segment(first, original)
+    store.update_segment(first, replace(original, text="correct name"))
+    store.add_segment(second, original)
+    store.remove_segment(second, original.id)
+    completed = []
+    store.end_session_async(first, finished=lambda: completed.append("first"))
+    store.end_session_async(second, finished=lambda: completed.append("second"))
+    store.flush()
+    assert first.row_id is not None and not first.failed
+    assert [seg.text for seg in store.segments(first)] == ["correct name"]
+    assert store.get_session(first).ended_at is not None
+    assert store.get_session(second) is None
+    assert completed == ["first", "second"]
+    assert not store.search("mistaken")
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_failed_async_creation_never_assigns_captions_to_another_session(
+    store, monkeypatch, background,
+):
+    import contextlib
+    import sqlite3
+
+    from subbyai.storage.session_store import HistoryWriteError
+
+    existing = store.create_session("Unrelated")
+    connect = store._connect
+
+    @contextlib.contextmanager
+    def unavailable():
+        raise sqlite3.OperationalError("Storage unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(store, "_connect", unavailable)
+    if background:
+        store.start_writer()
+    failed = store.create_session_async("Failure")
+    store.add_segment(failed, _seg("never in unrelated history"))
+    store.end_session_async(failed)
+    with pytest.raises(HistoryWriteError):
+        store.flush()
+    assert failed.failed and failed.row_id is None
+    monkeypatch.setattr(store, "_connect", connect)
+    recovered = store.create_session_async("Recovered")
+    store.add_segment(recovered, _seg("saved after recovery"))
+    store.end_session_async(recovered)
+    store.flush()
+    assert not store.segments(existing)
+    assert [s.text for s in store.segments(recovered)] == ["saved after recovery"]
+    assert not store.search("unrelated history")
+
+
+def test_deferred_existing_database_initializes_only_on_worker(tmp_path, monkeypatch):
+    import threading
+
+    from subbyai.storage import SessionStore
+
+    path = tmp_path / "existing.db"
+    with_existing = SessionStore(path)
+    old = with_existing.create_session("Existing")
+    with_existing.close()
+    init_threads = []
+    initialize = SessionStore._init_schema
+
+    def observed_initialize(self):
+        init_threads.append(threading.current_thread())
+        initialize(self)
+
+    monkeypatch.setattr(SessionStore, "_init_schema", observed_initialize)
+    ready = []
+    deferred = SessionStore(
+        path, lazy=True, defer_initialize=True, on_ready=lambda: ready.append(True),
+    )
+    try:
+        assert not init_threads and deferred.list_sessions() == []
+        deferred.start_writer()
+        deferred.flush()
+        assert len(init_threads) == 1 and init_threads[0] is not threading.current_thread()
+        assert ready == [True] and deferred.get_session(old).title == "Existing"
+    finally:
+        deferred.close()
+
+
+def test_deferred_opt_out_does_not_create_database(tmp_path):
+    from subbyai.storage import SessionStore
+
+    path = tmp_path / "private.db"
+    deferred = SessionStore(path, lazy=True, defer_initialize=True)
+    try:
+        deferred.start_writer()
+        deferred.flush()
+        assert not path.exists()
+    finally:
+        deferred.close()
+
+
+def test_session_reference_is_never_resolved_to_a_rolled_back_row(store):
+    from subbyai.storage.session_store import HistoryWriteError
+
+    with store._connect() as conn:
+        conn.execute(
+            "CREATE TRIGGER reject_caption BEFORE INSERT ON segments "
+            "BEGIN SELECT RAISE(ABORT, 'Unavailable'); END",
+        )
+    failed = store.create_session_async("Rolled back")
+    store.add_segment(failed, _seg("discarded caption"))
+    with pytest.raises(HistoryWriteError):
+        store.flush()
+    assert failed.failed and failed.row_id is None
+    assert store.list_sessions() == []
+    with store._connect() as conn:
+        conn.execute("DROP TRIGGER reject_caption")
+    good = store.create_session_async("Committed")
+    store.add_segment(good, _seg("committed caption"))
+    store.flush()
+    assert good.row_id is not None
+    assert store.segments(failed) == []
+    assert [s.text for s in store.segments(good)] == ["committed caption"]

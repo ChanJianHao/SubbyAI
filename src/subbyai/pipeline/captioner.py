@@ -720,7 +720,8 @@ class Captioner(QObject):
             text = (result.text or "").strip()
             if caption_filter is not None:
                 text = caption_filter.clean(text)
-                if caption_filter.should_drop(text, result.speech_probability, result.confidence):
+                confidence = result.confidence if result.confidence_known else None
+                if caption_filter.should_drop(text, result.speech_probability, confidence):
                     log.debug("Dropped a likely hallucination")
                     reject_revision()
                     continue

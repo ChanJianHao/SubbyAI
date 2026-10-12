@@ -12,6 +12,7 @@ accepted that environment for the issue's Windows 11 acceptance. No 24H2-specifi
 | Enabled preference was confused with a visible, painted window | Installed 1.0.0 could have a checked control and no visible bar before speech; an empty mapped window painted no acknowledgment | Map the existing independent native window immediately; paint an enabled/waiting notice without starting ASR |
 | Opacity changes did not map a hidden window | Caption wake and start/stop paths could retain a hidden QWidget | Explicit Qt mapping and verified non-activating Win32 show; retain the same HWND |
 | Disk persistence ran in the click handler | Injected slow storage blocked an Overlay click for 606 ms | Apply feedback synchronously, then coalesce immutable settings snapshots on one writer; prevent stale saves overwriting newer settings |
+| Opt-in history performed database lifecycle I/O on the GUI | Blocked connections delayed caption start/stop by 678/651 ms; existing database initialization also ran before UI construction | Defer schema initialization, session creation and finalization to the existing FIFO writer; resolve opaque session owners only after successful commit |
 | Stopping captions and disabling the overlay were conflated | Stop hid/cleared the bar while the persisted control remained on | Keep display preference independent of capture; preserve the final drained caption unless the user's clear-on-stop policy applies |
 | Late health events could reopen a closing application | OFF, STARTING and ERROR callbacks after Quit reopened the overlay in three failing tests | Ignore late lifecycle updates during shutdown |
 | Model-install continuation did not fully communicate/clear state | Download start lacked overlay progress state; failure retained a pending start | Explicit Downloading/Error feedback, cancel/failure cleanup and actionable recovery |
@@ -21,9 +22,9 @@ The selected accent supplies the active color (pink with the default Sakura them
 reports Idle rather than claiming the control is off. Mapping failures return the preference,
 button and bar to Off with a settings action. Expensive loading remains outside the GUI thread.
 
-Native candidate verification exercised 43 clicks, slow settings I/O, blocked model loading,
-initialization failure/retry, three pipeline cycles, external native hiding/recovery, foreground
-retention and a stable HWND. Maximum synchronous click duration was 7.4 ms in the final pre-release
+Native candidate verification exercised 47 clicks, slow settings/history I/O, blocked model loading,
+initialization failure/retry, four pipeline cycles, external native hiding/recovery, foreground
+retention and a stable HWND. Maximum synchronous click duration was 8.5 ms in the final pre-release
 candidate. Native rendering/navigation passed at 125%, 187.5% and 250% effective DPI without paint
 errors. The exact committed release and installed binary must repeat the frozen checks and actual
 button cycles before publishing or closing the issue; results belong in the release notes.
@@ -45,8 +46,17 @@ button cycles before publishing or closing the issue; results belong in the rele
 - Translation-only history retained a superseded fragment alongside its completed sentence.
   Queue event retraction in write order, update corrected source/timing by event ID, and update
   the FTS index. Excluded source text never enters the storage queue.
+- Late translation corrections could cross an opt-in history policy change. Bound event ownership
+  to its original session and ignore late storage updates belonging to a different session. FIFO
+  lifecycle tests also verify failed creation, transaction rollback and recovery without mixing rows.
+- Quit ignored queued final recognition results before closing history. Join producers, process their
+  queued final results without reopening UI, then finalize and flush storage off the GUI. A real
+  threaded Quit regression verifies final buffered speech and process shutdown cancellation.
 - Remote ASR null/malformed/incomplete timestamps could crash recognition or replace valid text
   with a subset. Preserve the complete reply and fall back to text reconciliation as a unit.
+- Unavailable ASR confidence was passed as zero into hallucination filtering. Actual recognition-
+  lane tests reproduced valid remote greetings disappearing. Propagate an explicit unavailable
+  value; require available weak evidence before blacklisting ordinary dialogue.
 - A successful process launch was insufficient package proof. The verifier now requires the
   diagnostic completion marker and can require an exact clean embedded Git revision.
 
@@ -110,8 +120,13 @@ every ASR input matched its recorded source slice bit-for-bit. Trace drops were 
 
 - Fresh environment synchronized from the lockfile with Python 3.13.16 and all production/GPU
   dependencies. The 1.0.1 lock change updates only the project's version, not dependency versions.
-- Final full suite: **844 passed**, 353.32 seconds; no tests disabled or newly skipped. Ruff,
+- Final full suite: **862 passed**, 297.65 seconds. Five failing reproductions cover the last
+  absent-confidence fix; an additional test preserves explicit user phrase exclusions as a
+  separate policy. No tests were disabled or newly skipped. Ruff,
   Python compilation and version consistency passed. No separate type checker is configured.
+  The new real-Quit test initially left the process-wide cancellation flag set in pytest, causing
+  five later package tests to fail. Its shutdown event is now isolated and cancellation asserted;
+  the affected 74-test sequence and the complete suite were repeated successfully.
 - Native real-loopback recognition/translation, language reconnects, model switching in both
   directions, persisted settings, overlay positioning, main-window hiding and non-activating
   topmost/click-through checks passed. Fresh download/cancel/resume/duplicate-request/activation

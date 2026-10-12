@@ -180,6 +180,46 @@ def test_confident_ordinary_dialogue_is_not_blacklisted():
         assert gate.should_drop(text, 0.1, 0.2)
 
 
+@pytest.mark.parametrize("text", ["Hello.", "Thank you.", "I'll be back soon."])
+def test_absent_model_confidence_is_not_evidence_for_blacklisting(text):
+    gate = HallucinationFilter(["hello", "thank you", "I'll be back soon"])
+    assert not gate.should_drop(text, 1.0, None)
+    assert gate.should_drop(text, 1.0, 0.1)
+
+
+def test_explicit_user_ignored_phrase_is_preserved_as_a_separate_policy(monkeypatch):
+    monkeypatch.setattr("subbyai.pipeline.hallucinations.load_default_phrases", lambda: ["hello"])
+    monkeypatch.setattr("subbyai.pipeline.hallucinations.load_user_phrases", lambda: ["exclude me"])
+    gate = HallucinationFilter()
+    assert not gate.should_drop("Hello.", 1.0, None)
+    assert gate.should_drop("Exclude me.", 1.0, None)
+    assert not gate.should_drop("Exclude me from this sentence.", 1.0, None)
+
+
+@pytest.mark.parametrize("text", ["Hello.", "Thank you."])
+def test_unknown_confidence_reaches_live_caption_in_the_real_recognition_lane(qt_app, text):
+    from subbyai.core.settings import SessionConfig, Settings
+    from subbyai.pipeline.captioner import AudioWork, Captioner
+
+    class UnknownEngine:
+        def transcribe(self, audio, **kwargs):
+            return Transcript(text, language="en", confidence_known=False,
+                              speech_probability=1.0, duration=len(audio) / 16000)
+
+    settings = Settings()
+    settings.captions.source_language = "en"
+    pipeline = Captioner(lambda _: UnknownEngine(), lambda _: None)
+    received = []
+    pipeline.segment_ready.connect(received.append)
+    pipeline._session_start = time.monotonic()
+    pipeline._segmentation_done.set()
+    pipeline._asr_queue.put_nowait(AudioWork(tone(1), 0, 1, time.monotonic()))
+    pipeline._recognize_loop(UnknownEngine(), SessionConfig.from_settings(settings),
+                             HallucinationFilter(["hello", "thank you"]))
+    assert [segment.text for segment in received] == [text]
+    assert not received[0].confidence_known
+
+
 def test_timestamp_reconciliation_removes_boundary_name_and_preserves_real_repetition():
     reconciler = Reconciler()
     first = (WordSpan(" Please", 0, 0.3), WordSpan(" ask", 0.3, 0.6), WordSpan(" Nakamura", 0.6, 1))

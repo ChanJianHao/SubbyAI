@@ -71,16 +71,41 @@ class SearchHit:
 
 @dataclass(frozen=True, slots=True)
 class _RemoveSegment:
-    session_id: int
+    session_id: int | SessionRef
     event_id: int
+
+
+@dataclass(eq=False, slots=True)
+class SessionRef:
+    """An opaque session owner resolved only after its creation commits."""
+
+    row_id: int | None = None
+    failed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CreateSession:
+    ref: SessionRef
+    title: str
+    source_language: str
+    target_language: str
+    started_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _EndSession:
+    session_id: int | SessionRef
+    ended_at: float
+    keep_empty: bool
+    finished: Callable[[], None] | None
 
 
 class SessionStore:
     """Thread-safe store with a background writer.
 
-    Reads happen on the calling thread using short-lived connections; writes go
-    through a queue so neither the caption pipeline nor the UI ever blocks on
-    disk.
+    Reads use short-lived connections. Caption writes and the asynchronous
+    session lifecycle share one ordered queue. Synchronous lifecycle and
+    maintenance APIs remain available for callers outside the live GUI flow.
     """
 
     def __init__(
@@ -89,6 +114,8 @@ class SessionStore:
         flush_interval: float = _FLUSH_INTERVAL,
         *,
         lazy: bool = False,
+        defer_initialize: bool = False,
+        on_ready: Callable[[], None] | None = None,
         on_write_failure: Callable[[], None] | None = None,
     ):
         self._path = db_path or paths.sessions_db()
@@ -98,12 +125,14 @@ class SessionStore:
         self._failure_pending = False
         self._failure_lock = threading.Lock()
         self._on_write_failure = on_write_failure
+        self._on_ready = on_ready
+        self._defer_initialize = defer_initialize
         self._writer: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.recovered_backup: Path | None = None
         self._initialized = False
-        if not lazy or self._path.exists():
+        if not defer_initialize and (not lazy or self._path.exists()):
             self._initialize()
 
     def _initialize(self) -> None:
@@ -126,6 +155,8 @@ class SessionStore:
             self._init_schema()
             log.warning("Damaged transcript storage preserved in a local recovery folder")
         self._initialized = True
+        if self._on_ready is not None:
+            self._notify(self._on_ready)
 
     # ---------- lifecycle ----------
 
@@ -171,6 +202,8 @@ class SessionStore:
         if self._writer and self._writer.is_alive():
             return
         self._stop.clear()
+        if self._defer_initialize and self._path.exists() and not self._initialized:
+            self._enqueue(_INITIALIZE)
         self._writer = threading.Thread(target=self._writer_loop, name="subbyai-store", daemon=True)
         self._writer.start()
 
@@ -189,6 +222,24 @@ class SessionStore:
 
     # ---------- sessions ----------
 
+    def create_session_async(
+        self, title: str, source_language: str = "", target_language: str = ""
+    ) -> SessionRef:
+        """Queue creation before subsequent writes without touching disk on the caller."""
+        ref = SessionRef()
+        if not self._enqueue(_CreateSession(
+            ref, title, source_language, target_language, time.time(),
+        )):
+            ref.failed = True
+        return ref
+
+    def end_session_async(
+        self, session_id: int | SessionRef, *, keep_empty: bool = False,
+        finished: Callable[[], None] | None = None,
+    ) -> None:
+        """Finalize after all prior captions, without waiting on the UI thread."""
+        self._enqueue(_EndSession(session_id, time.time(), keep_empty, finished))
+
     def create_session(
         self, title: str, source_language: str = "", target_language: str = ""
     ) -> int:
@@ -201,12 +252,13 @@ class SessionStore:
             )
             return int(cursor.lastrowid)
 
-    def end_session(self, session_id: int, *, keep_empty: bool = False) -> None:
+    def end_session(self, session_id: int | SessionRef, *, keep_empty: bool = False) -> None:
         failure = None
         try:
             self.flush()
         except HistoryWriteError as exc:
             failure = exc
+        session_id = self._resolve(session_id)
         with self._lock, self._connect() as conn:
             conn.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (time.time(), session_id))
             # Drop sessions that captured nothing rather than littering History.
@@ -262,8 +314,9 @@ class SessionStore:
             ).fetchall()
         return [_session_from_row(row) for row in rows]
 
-    def get_session(self, session_id: int) -> SessionInfo | None:
-        if not self._initialized:
+    def get_session(self, session_id: int | SessionRef) -> SessionInfo | None:
+        session_id = self._row_id(session_id)
+        if not self._initialized or session_id is None:
             return None
         with self._connect() as conn:
             row = conn.execute(
@@ -284,26 +337,21 @@ class SessionStore:
 
     # ---------- segments ----------
 
-    def add_segment(self, session_id: int, segment: CaptionSegment) -> None:
+    def add_segment(self, session_id: int | SessionRef, segment: CaptionSegment) -> None:
         """Queue a segment for the writer thread. Never blocks."""
-        try:
-            self._queue.put_nowait((session_id, segment))
-        except queue.Full:
-            self._report_loss(1)
+        self._enqueue((session_id, segment))
 
-    def update_segment(self, session_id: int, segment: CaptionSegment) -> None:
+    def update_segment(self, session_id: int | SessionRef, segment: CaptionSegment) -> None:
         """Upsert by session and event id, including updates ahead of a batch flush."""
         self.add_segment(session_id, segment)
 
-    def remove_segment(self, session_id: int, event_id: int) -> None:
+    def remove_segment(self, session_id: int | SessionRef, event_id: int) -> None:
         """Retract a superseded event in order with already queued writes."""
-        try:
-            self._queue.put_nowait(_RemoveSegment(session_id, event_id))
-        except queue.Full:
-            self._report_loss(1)
+        self._enqueue(_RemoveSegment(session_id, event_id))
 
-    def segments(self, session_id: int) -> list[CaptionSegment]:
-        if not self._initialized:
+    def segments(self, session_id: int | SessionRef) -> list[CaptionSegment]:
+        session_id = self._row_id(session_id)
+        if not self._initialized or session_id is None:
             return []
         with self._connect() as conn:
             rows = conn.execute(
@@ -365,11 +413,14 @@ class SessionStore:
         except OSError:
             return 0
 
-    def apply_retention(self, retention_days: int, *, active_session: int | None = None) -> int:
+    def apply_retention(
+        self, retention_days: int, *, active_session: int | SessionRef | None = None,
+    ) -> int:
         """Delete sessions older than the policy. Returns how many went."""
         if not self._initialized or retention_days <= 0:
             return 0
         cutoff = time.time() - retention_days * 86400
+        active_session = self._row_id(active_session)
         with self._lock, self._connect() as conn:
             old = [
                 r["id"]
@@ -403,8 +454,34 @@ class SessionStore:
 
     # ---------- writer ----------
 
+    def _enqueue(self, item: object) -> bool:
+        try:
+            self._queue.put_nowait(item)
+            return True
+        except queue.Full:
+            self._report_loss(1)
+            return False
+
+    @staticmethod
+    def _row_id(session_id: int | SessionRef | None) -> int | None:
+        return session_id.row_id if isinstance(session_id, SessionRef) else session_id
+
+    @classmethod
+    def _resolve(cls, session_id: int | SessionRef) -> int:
+        row_id = cls._row_id(session_id)
+        if row_id is None:
+            raise HistoryWriteError()
+        return row_id
+
+    @staticmethod
+    def _notify(callback: Callable[[], None]) -> None:
+        try:
+            callback()
+        except Exception:
+            log.warning("Could not dispatch transcript storage notification")
+
     def _writer_loop(self) -> None:
-        pending: list[tuple[int, CaptionSegment] | _RemoveSegment] = []
+        pending: list[object] = []
         last_commit = time.monotonic()
         while True:
             timeout = max(0.05, self._flush_interval - (time.monotonic() - last_commit))
@@ -424,10 +501,11 @@ class SessionStore:
                 item.done.set()
                 continue
             if item is not _TICK:
-                pending.append(item)  # type: ignore[arg-type]
+                pending.append(item)
 
             due = time.monotonic() - last_commit >= self._flush_interval
-            if pending and (due or len(pending) >= 32):
+            immediate = item is _INITIALIZE or isinstance(item, (_CreateSession, _EndSession))
+            if pending and (immediate or due or len(pending) >= 32):
                 self._commit(pending)
                 pending = []
                 last_commit = time.monotonic()
@@ -445,19 +523,56 @@ class SessionStore:
                 pending.append(item)
         self._commit(pending)
 
-    def _commit(self, pending: list[tuple[int, CaptionSegment] | _RemoveSegment]) -> None:
+    def _commit(self, pending: list[object]) -> None:
         if not pending:
             return
+        created: dict[SessionRef, int] = {}
+        completed: list[Callable[[], None]] = []
+
+        def resolve(owner: int | SessionRef) -> int:
+            if isinstance(owner, SessionRef) and owner in created:
+                return created[owner]
+            return self._resolve(owner)
+
         try:
+            if any(item is _INITIALIZE or isinstance(item, _CreateSession) for item in pending):
+                self._initialize()
+            writes = [item for item in pending if item is not _INITIALIZE]
+            if not writes:
+                return
             with self._lock, self._connect() as conn:
-                for item in pending:
+                for item in writes:
+                    if isinstance(item, _CreateSession):
+                        cursor = conn.execute(
+                            "INSERT INTO sessions "
+                            "(title, started_at, source_language, target_language)"
+                            " VALUES (?, ?, ?, ?)",
+                            (item.title, item.started_at, item.source_language or None,
+                             item.target_language or None),
+                        )
+                        created[item.ref] = int(cursor.lastrowid)
+                        continue
+                    if isinstance(item, _EndSession):
+                        owner = resolve(item.session_id)
+                        conn.execute(
+                            "UPDATE sessions SET ended_at = ? WHERE id = ?", (item.ended_at, owner),
+                        )
+                        if not item.keep_empty:
+                            conn.execute(
+                                "DELETE FROM sessions WHERE id = ? AND NOT EXISTS "
+                                "(SELECT 1 FROM segments WHERE session_id = ?)", (owner, owner),
+                            )
+                        if item.finished is not None:
+                            completed.append(item.finished)
+                        continue
                     if isinstance(item, _RemoveSegment):
                         conn.execute(
                             "DELETE FROM segments WHERE session_id = ? AND event_id = ?",
-                            (item.session_id, item.event_id),
+                            (resolve(item.session_id), item.event_id),
                         )
                         continue
                     session_id, seg = item
+                    session_id = resolve(session_id)
                     conn.execute(
                         "INSERT INTO segments (session_id, event_id, audio_start, audio_duration,"
                         " created_at, text, translation, language, confidence)"
@@ -475,7 +590,15 @@ class SessionStore:
                         ),
                     )
         except (sqlite3.Error, OSError):
+            for item in pending:
+                if isinstance(item, _CreateSession):
+                    item.ref.failed = True
             self._report_loss(len(pending))
+            return
+        for ref, row_id in created.items():
+            ref.row_id = row_id
+        for callback in completed:
+            self._notify(callback)
 
     def _report_loss(self, count: int) -> None:
         with self._failure_lock:
@@ -514,6 +637,7 @@ class _FlushBarrier:
 
 
 _TICK: object = object()  # "no item arrived", distinct from shutdown
+_INITIALIZE: object = object()
 
 
 def _session_from_row(row: sqlite3.Row) -> SessionInfo:

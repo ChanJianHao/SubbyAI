@@ -217,6 +217,7 @@ def _check_overlay_startup(app, scratch: Path) -> list[str]:
     No real audio or account configuration is touched. Recognition with actual
     models is a separate mandatory check. This runs in the frozen Qt runtime too.
     """
+    import contextlib
     import threading
     import time
 
@@ -226,6 +227,7 @@ def _check_overlay_startup(app, scratch: Path) -> list[str]:
     from .app import Controller
     from .asr.engine import EngineCache, EngineError, Transcript
     from .audio.base import AudioDevice
+    from .core.events import CaptionSegment
     from .core.health import HealthState
     from .core.settings import SettingsStore
     from .pipeline import PipelinePhase
@@ -248,6 +250,8 @@ def _check_overlay_startup(app, scratch: Path) -> list[str]:
     release, entered = threading.Event(), threading.Event()
     save_release = threading.Event()
     save_release.set()
+    history_release = threading.Event()
+    history_release.set()
     heartbeat = QTimer()
     ticks = []
     heartbeat.timeout.connect(lambda: ticks.append(time.monotonic()))
@@ -381,19 +385,63 @@ def _check_overlay_startup(app, scratch: Path) -> list[str]:
             controller.stop_captions()
             settle(lambda: not controller.captioner.has_workers)
             assert_window(True)
+
+        history_entered = threading.Event()
+        connect = controller.sessions._connect
+        history_release.clear()
+
+        @contextlib.contextmanager
+        def slow_history():
+            history_entered.set()
+            if not history_release.wait(5):
+                raise OSError("Controlled history write timeout")
+            with connect() as connection:
+                yield connection
+
+        controller.sessions._connect = slow_history
+        controller.settings.history.enabled = True
+        controller.settings.history.save_original = True
+        controller.settings.history.retention_days = 0
+        before = time.perf_counter()
+        controller._begin_session()
+        lifecycle_duration = time.perf_counter() - before
+        settle(history_entered.is_set)
+        settle(lambda: controller.captioner.phase is PipelinePhase.RUNNING)
+        session = controller._session_id
+        controller._on_segment(CaptionSegment("Public history lifecycle check."))
+        controller.stop_captions()
+        settle(lambda: not controller.captioner.has_workers)
+        tick_count = len(ticks)
+        for enabled in (False, True, False, True):
+            before = time.perf_counter()
+            controller.live.overlay_chip.click()
+            durations.append(time.perf_counter() - before)
+            app.processEvents()
+            assert_window(enabled)
+        settle(lambda: len(ticks) >= tick_count + 3)
+        history_release.set()
+        controller.sessions.flush(5)
+        controller.sessions._connect = connect
+        assert lifecycle_duration < 0.15, f"history start blocked for {lifecycle_duration:.3f}s"
+        assert [s.text for s in controller.sessions.segments(session)] == [
+            "Public history lifecycle check.",
+        ]
+        assert controller.sessions.get_session(session).ended_at is not None
         controller._on_overlay_toggled(False)
         assert_window(False)
         assert int(controller.overlay.winId()) == handle
         assert max(durations) < 0.15, f"click blocked for {max(durations):.3f} seconds"
         print(
             f"Overlay lifecycle: OK ({app.platformName()}, {len(durations)} clicks, "
-            f"max {max(durations) * 1000:.1f} ms, slow save/startup, failure/retry, same window)"
+            f"max {max(durations) * 1000:.1f} ms, slow save/history/startup, "
+            "failure/retry, same window)"
         )
     except Exception as exc:
         return [f"Overlay lifecycle: {exc}"]
     finally:
         release.set()
         save_release.set()
+        history_release.set()
         heartbeat.stop()
         if controller is not None:
             controller.captioner.stop(drain=False)

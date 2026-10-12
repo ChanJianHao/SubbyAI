@@ -41,6 +41,7 @@ from .core.settings import (
 )
 from .pipeline import Captioner
 from .storage import SessionStore
+from .storage.session_store import SessionRef
 from .system.hotkeys import HotkeyManager
 from .system.single_instance import SingleInstance
 from .translation.chain import TranslationChain
@@ -60,9 +61,12 @@ class Controller(QObject):
     """Owns the objects and the conversations between them."""
 
     shutdown_ready = Signal()
+    capture_shutdown_ready = Signal()
     devices_changed = Signal(object)
     capability_ready = Signal(object)
     history_storage_failed = Signal()
+    history_storage_ready = Signal()
+    history_session_finished = Signal()
     retention_finished = Signal(int, bool)
     speech_state_changed = Signal(object)
     settings_save_finished = Signal(int, bool)
@@ -73,8 +77,10 @@ class Controller(QObject):
         self.store = store
         self.settings: Settings = store.settings
 
-        self.sessions = SessionStore(lazy=True, on_write_failure=self.history_storage_failed.emit)
-        self.sessions.start_writer()
+        self.sessions = SessionStore(
+            lazy=True, defer_initialize=True, on_ready=self.history_storage_ready.emit,
+            on_write_failure=self.history_storage_failed.emit,
+        )
         self.models = ModelManager()
         self.engines = default_cache()
         self.downloads = ModelDownloads(self.models, self)
@@ -92,7 +98,8 @@ class Controller(QObject):
         self.tray = Tray(self.shell)
         self.hotkeys = HotkeyManager(self)
 
-        self._session_id: int | None = None
+        self._session_id: int | SessionRef | None = None
+        self._history_owners: dict[int, int | SessionRef | None] = {}
         from .storage.policy import HistoryPolicy
 
         self._history_policy = HistoryPolicy()
@@ -122,6 +129,7 @@ class Controller(QObject):
         self._build_surfaces()
         self._connect()
         self._sync_runtime_ui()
+        self.sessions.start_writer()
         self._apply_retention()
 
     # ---------- construction ----------
@@ -235,9 +243,12 @@ class Controller(QObject):
         self.speech_state_changed.connect(self._on_speech_state)
         self.settings_save_finished.connect(self._on_settings_save_finished)
         self.shutdown_ready.connect(self._finish_quit)
+        self.capture_shutdown_ready.connect(self._finish_capture_shutdown)
         self.devices_changed.connect(self._on_devices_changed)
         self.capability_ready.connect(self._on_capability_ready)
         self.history_storage_failed.connect(self._on_history_storage_failed)
+        self.history_storage_ready.connect(self._on_history_storage_ready)
+        self.history_session_finished.connect(self._on_history_session_finished)
         self.retention_finished.connect(self._on_retention_finished)
         self.live.cancel_download_requested.connect(self.cancel_download)
 
@@ -310,24 +321,32 @@ class Controller(QObject):
                 self._load_thread.join()
             if self._retention_thread is not None:
                 self._retention_thread.join()
-            try:
-                if self._session_id is not None:
-                    self.sessions.end_session(
-                        self._session_id, keep_empty=self._history_policy.metadata_only
-                    )
-                    self._session_id = None
-            except (OSError, TimeoutError, sqlite3.Error):
-                log.exception("Could not finish transcript storage during shutdown")
-            finally:
-                self.sessions.close()
             with self._model_lifecycle_lock:
                 self.engines.evict_all()
             from PySide6.QtCore import QThreadPool
 
             QThreadPool.globalInstance().waitForDone()
-            self.shutdown_ready.emit()
+            self.capture_shutdown_ready.emit()
 
         threading.Thread(target=shutdown, name="subbyai-shutdown", daemon=True).start()
+
+    def _finish_capture_shutdown(self) -> None:
+        # The worker has joined every caption producer. Their queued final
+        # results reach this GUI before this signal, so storage can now finish.
+        self._end_session()
+
+        def finish_storage():
+            try:
+                self.sessions.flush(timeout=30)
+            except (OSError, TimeoutError, sqlite3.Error):
+                log.warning("Could not finish transcript storage during shutdown")
+            finally:
+                self.sessions.close()
+            self.shutdown_ready.emit()
+
+        threading.Thread(
+            target=finish_storage, name="subbyai-storage-shutdown", daemon=True,
+        ).start()
 
     def _finish_quit(self) -> None:
         self.tray.hide()
@@ -491,13 +510,15 @@ class Controller(QObject):
     # ---------- pipeline events ----------
 
     def _on_segment(self, segment: CaptionSegment) -> None:
-        if self._quitting:
-            return
-        self.overlay.show_segment(segment)
-        self.live.add_segment(segment)
-        self._segment_count += 1
-        self._word_count += len(segment.text.split())
-        self._update_ticker(segment)
+        if not self._quitting:
+            self.overlay.show_segment(segment)
+            self.live.add_segment(segment)
+            self._segment_count += 1
+            self._word_count += len(segment.text.split())
+            self._update_ticker(segment)
+        self._history_owners[segment.id] = self._session_id
+        while len(self._history_owners) > 512:
+            del self._history_owners[next(iter(self._history_owners))]
         if (
             self._session_id is not None
             and self.settings.history.enabled
@@ -508,14 +529,14 @@ class Controller(QObject):
                 self.sessions.add_segment(self._session_id, stored)
 
     def _on_segment_updated(self, segment: CaptionSegment) -> None:
-        if self._quitting:
-            return
-        self.overlay.update_segment(segment)
-        self.live.update_segment(segment)
+        if not self._quitting:
+            self.overlay.update_segment(segment)
+            self.live.update_segment(segment)
         if (
             self._session_id is not None
             and self.settings.history.enabled
             and segment.recognition_state is RecognitionState.FINAL
+            and self._history_owners.get(segment.id) == self._session_id
         ):
             stored = self._history_policy.for_storage(segment)
             if stored is not None:
@@ -565,6 +586,22 @@ class Controller(QObject):
         )
         if not already_warned and not self.shell.isVisible():
             self.tray.notify(APP_NAME, message)
+
+    def _on_history_session_finished(self) -> None:
+        if not self._quitting and self.shell.current_segment == _HISTORY:
+            self.history.refresh()
+
+    def _on_history_storage_ready(self) -> None:
+        if self._quitting:
+            return
+        if self.sessions.recovered_backup is not None:
+            self.live.history_warning.show_message(
+                "Damaged history was preserved in a local recovery folder. "
+                "A new history database is ready. Open storage settings to find its location.",
+                "warning", "Storage settings", "manage_storage",
+            )
+        self._on_history_session_finished()
+        self._apply_retention()
 
     def _on_error(self, message: str) -> None:
         self.live.set_running(False)
@@ -638,17 +675,10 @@ class Controller(QObject):
         if self._session_id is not None:
             session_id = self._session_id
             self._session_id = None
-            try:
-                self.sessions.end_session(session_id, keep_empty=self._history_policy.metadata_only)
-            except (OSError, TimeoutError, sqlite3.Error):
-                log.exception("Could not finish transcript storage")
-                self.live.history_warning.show_message(
-                    "Your captions stopped, but transcript storage couldn't finish. "
-                    "Check free disk space and try again.",
-                    "warning",
-                )
-                return
-            self.history.refresh()
+            self.sessions.end_session_async(
+                session_id, keep_empty=self._history_policy.metadata_only,
+                finished=self.history_session_finished.emit,
+            )
 
     def _start_history(self) -> None:
         from .storage.policy import HistoryPolicy
@@ -657,18 +687,11 @@ class Controller(QObject):
         self.live.history_warning.hide()
         if not self._history_policy.enabled:
             return
-        try:
-            self._session_id = self.sessions.create_session(
-                "Session — " + datetime.now().strftime("%H:%M"),
-                self.settings.captions.source_language,
-                self.settings.captions.target_language,
-            )
-        except (OSError, sqlite3.Error):
-            self.live.history_warning.show_message(
-                "Captions can run, but history couldn't be opened. "
-                "Check free disk space and folder permissions.",
-                "warning",
-            )
+        self._session_id = self.sessions.create_session_async(
+            "Session — " + datetime.now().strftime("%H:%M"),
+            self.settings.captions.source_language,
+            self.settings.captions.target_language,
+        )
 
     # ---------- providers ----------
 
@@ -1352,13 +1375,6 @@ def run(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    if controller.sessions.recovered_backup is not None:
-        QMessageBox.warning(
-            controller.shell,
-            APP_NAME,
-            "Your transcript database was damaged. SubbyAI preserved it for recovery at:\n"
-            f"{controller.sessions.recovered_backup}\n\nA new empty history is ready to use.",
-        )
     if not store.settings.general.onboarding_complete:
         controller.run_onboarding()
     controller.start()

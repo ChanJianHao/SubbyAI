@@ -15,7 +15,7 @@ from .. import paths
 log = logging.getLogger(__name__)
 
 _PUNCT_ONLY = re.compile(r"^[\W_]+$", re.UNICODE)
-#: Below this speech probability a caption is treated as noise regardless of text.
+#: Weak speech evidence; rejecting arbitrary text also requires weak known confidence.
 _NO_SPEECH_LIMIT = 0.6
 #: Fuzzy match ceiling — captions this close to a known filler are dropped.
 _LENGTH_SLACK = 12
@@ -23,28 +23,34 @@ _LENGTH_SLACK = 12
 
 class HallucinationFilter:
     def __init__(self, phrases: list[str] | None = None):
+        self._user_ignored = set()
         if phrases is None:
-            phrases = load_default_phrases() + load_user_phrases()
+            phrases = load_default_phrases()
+            self._user_ignored = {_normalize(p) for p in load_user_phrases() if p.strip()}
         self._phrases = {_normalize(p) for p in phrases if p.strip()}
 
     def should_drop(
-        self, text: str, speech_probability: float = 1.0, confidence: float = 1.0
+        self, text: str, speech_probability: float = 1.0, confidence: float | None = 1.0
     ) -> bool:
         """True when this caption is noise rather than speech."""
         stripped = text.strip()
         if not stripped or _PUNCT_ONLY.match(stripped):
             return True
 
-        # Combine both recognition signals before rejecting probable noise.
-        if speech_probability < _NO_SPEECH_LIMIT and confidence < 0.5:
+        # Unavailable confidence is not a zero score. Compatible servers may
+        # return only text; a phrase list cannot disprove that genuine speech.
+        weak_confidence = confidence is not None and confidence < 0.5
+        if speech_probability < _NO_SPEECH_LIMIT and weak_confidence:
             return True
 
         normalized = _normalize(stripped)
         if not normalized:
             return True
+        if normalized in self._user_ignored:
+            return True  # explicit whole-caption user exclusion, independent of model scores
         # Phrase lists include ordinary dialogue ("hello", "thank you", names).
         # Literal matches alone are not evidence that speech was hallucinated.
-        weak = speech_probability < 0.6 or confidence < 0.5
+        weak = speech_probability < _NO_SPEECH_LIMIT or weak_confidence
         if normalized in self._phrases and weak:
             return True
 

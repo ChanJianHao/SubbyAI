@@ -352,16 +352,30 @@ def test_the_settings_screen_can_actually_store_a_key(controller):
     assert callable(deps.api_key_set)
 
 
-def test_history_failure_does_not_break_stop_or_keep_session_ownership(controller, monkeypatch):
+def test_history_failure_does_not_break_stop_or_keep_session_ownership(
+    controller, monkeypatch, qt_app,
+):
+    import contextlib
     import sqlite3
 
-    def failed(_session, **_kwargs):
-        raise sqlite3.OperationalError("Database is unavailable")
+    from subbyai.storage.session_store import HistoryWriteError
 
-    controller._session_id = 42
-    monkeypatch.setattr(controller.sessions, "end_session", failed)
+    controller.settings.history.enabled = True
+    controller._start_history()
+    controller.sessions.flush()
+
+    @contextlib.contextmanager
+    def failed():
+        raise sqlite3.OperationalError("Database is unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(controller.sessions, "_connect", failed)
     controller._end_session()
     assert controller._session_id is None
+    with pytest.raises(HistoryWriteError):
+        controller.sessions.flush()
+    qt_app.processEvents()
+    assert not controller.live.history_warning.isHidden()
 
 
 def test_storage_warning_survives_healthy_audio(controller):
@@ -418,6 +432,93 @@ def test_history_preference_change_applies_before_next_caption(controller):
     saved = controller.sessions.segments(second)
     assert saved[0].text == ""
     assert saved[0].translation == "second translation"
+
+
+def test_late_caption_update_cannot_cross_a_history_policy_change(controller):
+    controller.settings.history.enabled = True
+    controller.captioner.is_active = True
+    controller._start_history()
+    first = controller._session_id
+    original = _segment("first original", "first translation")
+    controller._on_segment(original)
+    controller.settings.history.save_original = False
+    controller.store.notify("history")
+    second = controller._session_id
+    controller._on_segment_updated(original.with_translation(
+        "late first translation", "en", "Fake", PrivacyTier.ON_DEVICE,
+    ))
+    controller._on_segment(_segment("second original", "second translation"))
+    controller.sessions.flush()
+    assert [s.translation for s in controller.sessions.segments(first)] == ["first translation"]
+    assert [s.translation for s in controller.sessions.segments(second)] == ["second translation"]
+    assert not controller.sessions.search("late first")
+
+
+def test_quit_drains_final_caption_to_opt_in_history_without_reopening_ui(controller):
+    controller.settings.history.enabled = True
+    controller._start_history()
+    session = controller._session_id
+    controller._quitting = True
+    controller.overlay.close()
+    final = _segment("final buffered words")
+    controller._on_segment(final)
+    controller._on_segment_updated(final.with_translation(
+        "final translation", "en", "Fake", PrivacyTier.ON_DEVICE,
+    ))
+    controller._end_session()
+    controller.sessions.flush()
+    assert not controller.overlay.isVisible()
+    assert not controller.live._segments
+    saved = controller.sessions.segments(session)
+    assert [(s.text, s.translation) for s in saved] == [
+        ("final buffered words", "final translation"),
+    ]
+    assert controller.sessions.get_session(session).ended_at is not None
+
+
+def test_actual_quit_waits_for_queued_final_results_before_storage_close(controller, monkeypatch):
+    import threading
+    import time
+
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtTest import QTest
+
+    from subbyai.translation import packages
+
+    # This test keeps pytest's process alive after a real application shutdown.
+    # Isolate its process-wide cancellation event, and verify cancellation too.
+    shutdown_cancel = threading.Event()
+    monkeypatch.setattr(packages, "_shutdown_cancel", shutdown_cancel)
+
+    class Results(QObject):
+        ready = Signal(object)
+
+    results = Results()
+    results.ready.connect(controller._on_segment)
+    controller.settings.history.enabled = True
+    controller._start_history()
+    session = controller._session_id
+    final = _segment("queued at capture shutdown")
+
+    def wait_for_capture(timeout=0):
+        producer = threading.Thread(target=lambda: results.ready.emit(final))
+        producer.start()
+        producer.join()
+        return True
+
+    controller.captioner.wait = wait_for_capture
+    controller.shutdown_ready.disconnect(controller._finish_quit)
+    closed = []
+    controller.shutdown_ready.connect(lambda: closed.append(True))
+    controller.quit()
+    deadline = time.monotonic() + 5
+    while not closed and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert closed == [True]
+    assert shutdown_cancel.is_set()
+    assert not controller.overlay.isVisible()
+    assert [s.text for s in controller.sessions.segments(session)] == [final.text]
+    assert controller.sessions.get_session(session).ended_at is not None
 
 
 def test_missing_audio_is_reported_before_downloading_a_model(controller, monkeypatch):
