@@ -88,7 +88,7 @@ def motion_enabled(qt_app, monkeypatch):
     controller.configure(previous)
 
 
-def test_navigation_is_immediate_and_last_request_wins(qt_app):
+def test_navigation_is_immediate_and_last_request_wins(qt_app, wait_for_ui):
     stack = MotionStack()
     pages = [QPushButton(str(index)) for index in range(3)]
     for page in pages:
@@ -100,7 +100,7 @@ def test_navigation_is_immediate_and_last_request_wins(qt_app):
         stack.setCurrentIndex(index)
         assert stack.currentWidget() is pages[index]
         assert not pages[index].isHidden()
-    QTest.qWait(260)
+    wait_for_ui(stack._snapshot.isHidden)
     assert stack._snapshot.isHidden()
     assert stack._snapshot.pixmap.isNull()
     assert stack._transition.animation.state() == QAbstractAnimation.State.Stopped
@@ -124,14 +124,14 @@ def test_reduced_motion_settles_active_transitions(qt_app):
     assert stack._snapshot.pixmap.isNull()
 
 
-def test_reveal_reverses_and_disables_exiting_actions(qt_app):
+def test_reveal_reverses_and_disables_exiting_actions(qt_app, wait_for_ui):
     button = QPushButton("Confirm")
     button.show()
     reveal(button, False)
     assert not button.isEnabled()
     reveal(button, True)
     assert button.isEnabled()
-    QTest.qWait(220)
+    wait_for_ui(lambda: button.graphicsEffect().opacity() == 1.0)
     assert button.isVisible()
     assert button.graphicsEffect().opacity() == 1.0
     reveal(button, False)
@@ -165,7 +165,7 @@ def test_expandable_reverses_without_leaving_clipped_content(qt_app, wait_for_ui
     assert panel.maximumHeight() == 16777215
 
 
-def test_switch_keeps_state_when_refresh_blocks_signals(qt_app):
+def test_switch_keeps_state_when_refresh_blocks_signals(qt_app, wait_for_ui):
     toggle = MotionToggle("Use captions")
     toggle.show()
     blocker = QSignalBlocker(toggle)
@@ -175,20 +175,20 @@ def test_switch_keeps_state_when_refresh_blocks_signals(qt_app):
     for _ in range(7):
         toggle.click()
     assert not toggle.isChecked()
-    QTest.qWait(150)
+    wait_for_ui(lambda: toggle._position.value == 0.0)
     assert toggle._position.value == 0.0
     toggle.setFocus()
     QTest.keyClick(toggle, Qt.Key.Key_Space)
     assert toggle.isChecked()
 
 
-def test_progress_reports_real_value_and_stops_when_hidden(qt_app):
+def test_progress_reports_real_value_and_stops_when_hidden(qt_app, wait_for_ui):
     bar = SmoothProgressBar()
     bar.show()
     bar.setValue(20)
     bar.setValue(90)
     assert bar.value() == 90
-    QTest.qWait(220)
+    wait_for_ui(lambda: bar._fill.value == 0.9)
     assert bar._fill.value == pytest.approx(0.9)
     bar.setRange(0, 0)
     assert bar._cycle.state() == QAbstractAnimation.State.Running
@@ -215,7 +215,7 @@ def test_busy_feedback_never_runs_in_background(qt_app):
     assert indicator._cycle.state() == QAbstractAnimation.State.Stopped
 
 
-def test_replacement_toast_does_not_inherit_old_deadline(qt_app):
+def test_replacement_toast_does_not_inherit_old_deadline(qt_app, wait_for_ui):
     toast = Toast()
     toast.show_message("Temporary", seconds=0.02)
     toast.show_message("Keep this message", seconds=0)
@@ -224,7 +224,7 @@ def test_replacement_toast_does_not_inherit_old_deadline(qt_app):
     assert not toast._timer.isActive()
     toast.dismiss()
     toast.show_message("New message", seconds=0)
-    QTest.qWait(220)
+    wait_for_ui(lambda: toast.graphicsEffect().opacity() == 1.0)
     assert toast.isVisible() and toast.graphicsEffect().opacity() == 1.0
 
 
