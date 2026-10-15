@@ -7,7 +7,7 @@
 ;   iscc /DAppVersion=x.y.z packaging\windows\installer.iss
 ; The fallback keeps local builds working between releases.
 #ifndef AppVersion
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #endif
 #define AppPublisher "SubbyAI contributors"
 #define AppURL "https://github.com/ChanJianHao/SubbyAI"
