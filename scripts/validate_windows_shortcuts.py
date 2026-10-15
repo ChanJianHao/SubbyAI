@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from subbyai.core.settings import SettingsStore  # noqa: E402
 from subbyai.core.shortcuts import default_bindings  # noqa: E402
 from subbyai.system.hotkeys import HotkeyManager, is_valid_global  # noqa: E402
-from subbyai.system.shortcut_settings import ShortcutSettingsController  # noqa: E402
+from subbyai.ui.shortcut_settings import ShortcutSettingsController  # noqa: E402
 
 
 def main() -> int:

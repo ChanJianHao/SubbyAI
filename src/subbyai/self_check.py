@@ -86,7 +86,7 @@ def _check_imports() -> list[str]:
         "subbyai.translation.llm",
         "subbyai.storage.session_store",
         "subbyai.system.hotkeys",
-        "subbyai.system.shortcut_settings",
+        "subbyai.ui.shortcut_settings",
         "subbyai.core.shortcuts",
     ]
     failures = []

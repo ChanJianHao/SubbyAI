@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.settings import SettingsStore
-from ..system.shortcut_settings import ShortcutSettingsController
 from . import theme
 from .motion import MotionStack
 from .motion_widgets import MotionToggle as QCheckBox
@@ -43,6 +42,7 @@ from .settings_intelligence import IntelligenceSection
 from .settings_languages import LanguagesSection
 from .settings_widgets import restyle
 from .shortcut_editor import ShortcutEditor
+from .shortcut_settings import ShortcutSettingsController
 from .tokens import SPACE
 
 __all__ = ["SettingsDeps", "SettingsView"]

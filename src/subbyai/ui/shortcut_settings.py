@@ -4,7 +4,7 @@ from PySide6.QtCore import QObject, Signal
 
 from ..core.settings import SettingsStore
 from ..core.shortcuts import bindings_with_defaults
-from .hotkeys import HotkeyManager
+from ..system.hotkeys import HotkeyManager
 
 
 class ShortcutSettingsController(QObject):
