@@ -411,6 +411,16 @@ def test_shortcut_controls_fit_narrow_settings_with_larger_text(view, qt_app, te
     QApplication.processEvents()
     area = view.stack.currentWidget()
     assert area.horizontalScrollBar().maximum() == 0
+    label = view.advanced_label
+    assert label.width() >= label.fontMetrics().horizontalAdvance("Advanced")
+    assert label.height() >= label.heightForWidth(label.width())
+    assert view.advanced_toggle.accessibleName() == "Advanced Mode"
+    view.advanced_toggle.setFocus()
+    QTest.keyClick(view.advanced_toggle, Qt.Key.Key_Space)
+    assert view.advanced_toggle.isChecked()
+    QTest.keyClick(view.advanced_toggle, Qt.Key.Key_Space)
+    assert not view.advanced_toggle.isChecked()
+    assert view._current_key() == "shortcuts"
     for action, row in view.shortcuts._rows.items():
         assert row.chip.focusPolicy() == Qt.FocusPolicy.StrongFocus
         assert row.chip.accessibleName().endswith(row.title)

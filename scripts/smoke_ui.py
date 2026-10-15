@@ -151,6 +151,8 @@ def main() -> int:
             shell.resize(640, 460)
             app.processEvents()
             assert settings.stack.currentWidget().horizontalScrollBar().maximum() == 0
+            label = settings.advanced_label
+            assert label.height() >= label.heightForWidth(label.width())
             shell.grab().save(str(args.output / f"shortcuts-narrow-large-text-{mode}.png"))
             theme.apply(app, mode, reduce_motion=False)
             shell.resize(880, 620)
