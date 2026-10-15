@@ -12,6 +12,7 @@ live in ``onboarding_hardware``.
 from __future__ import annotations
 
 import logging
+import sys
 from functools import partial
 
 from PySide6.QtCore import Qt, Signal
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from ..branding import APP_NAME
 from ..core.settings import OriginalPosition, OverlayPreset, Settings
+from ..core.shortcuts import GLOBAL_ACTIONS
 from ..languages import (
     AUTO_DETECT,
     AUTO_DETECT_LABEL,
@@ -369,14 +371,18 @@ class ReadyStep(Step):
         shortcuts = settings.shortcuts.globals
         keys = QVBoxLayout()
         keys.setSpacing(SPACE["sm"])
-        for action, description in (
-            ("toggle_captions", "captions on/off"),
-            ("toggle_overlay", "show/hide captions"),
-            ("toggle_click_through", "click-through"),
-        ):
-            sequence = shortcuts.get(action, "")
-            if sequence:
-                keys.addWidget(KeyCapRow(sequence, description))
+        self.add_body(
+            "Global shortcuts work while another app is active. "
+            "View or change them anytime in Settings → Shortcuts."
+            if sys.platform == "win32"
+            else "Global shortcuts are available on Windows. "
+            "Find shortcuts for this window in Settings → Shortcuts."
+        )
+        if sys.platform == "win32":
+            for action in GLOBAL_ACTIONS[:3]:
+                sequence = shortcuts.get(action.id, "")
+                if sequence:
+                    keys.addWidget(KeyCapRow(sequence, action.label))
         self._root.addLayout(keys)
 
         self._games_tip = QLabel(

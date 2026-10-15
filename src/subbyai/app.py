@@ -78,7 +78,9 @@ class Controller(QObject):
         self.settings: Settings = store.settings
 
         self.sessions = SessionStore(
-            lazy=True, defer_initialize=True, on_ready=self.history_storage_ready.emit,
+            lazy=True,
+            defer_initialize=True,
+            on_ready=self.history_storage_ready.emit,
             on_write_failure=self.history_storage_failed.emit,
         )
         self.models = ModelManager()
@@ -215,7 +217,6 @@ class Controller(QObject):
         self.settings_view.restart_capture_requested.connect(self._restart_capture)
         self.settings_view.preview_requested.connect(self.overlay.show_placement_preview)
         self.settings_view.overlay_position_reset_requested.connect(self.overlay.restore_geometry)
-        self.settings_view.shortcuts_changed.connect(self._register_hotkeys)
         self.settings_view.check_updates_requested.connect(self._check_updates)
 
         self.tray.toggle_captions.connect(self.toggle_captions)
@@ -286,7 +287,7 @@ class Controller(QObject):
             self.capability_ready.emit(detect())
 
         threading.Thread(target=probe, name="subbyai-hardware", daemon=True).start()
-        self._register_hotkeys(self.settings.shortcuts.globals)
+        self._register_hotkeys()
         if self.settings.general.autostart_captions:
             QTimer.singleShot(400, self.start_captions)
 
@@ -345,7 +346,9 @@ class Controller(QObject):
             self.shutdown_ready.emit()
 
         threading.Thread(
-            target=finish_storage, name="subbyai-storage-shutdown", daemon=True,
+            target=finish_storage,
+            name="subbyai-storage-shutdown",
+            daemon=True,
         ).start()
 
     def _finish_quit(self) -> None:
@@ -464,8 +467,10 @@ class Controller(QObject):
             return
         if self._install_continuation and self._install_continuation[1] == "start":
             state = (
-                HealthState.ERROR if progress.phase == "error"
-                else HealthState.OFF if progress.phase == "cancelled"
+                HealthState.ERROR
+                if progress.phase == "error"
+                else HealthState.OFF
+                if progress.phase == "cancelled"
                 else HealthState.DOWNLOADING
             )
             self._on_health(HealthReport(state, installation_text(model, progress)))
@@ -499,11 +504,13 @@ class Controller(QObject):
             else:
                 self._install_continuation = None
                 if action == "start":
-                    self._on_health(HealthReport(
-                        HealthState.ERROR,
-                        "The speech model couldn't be installed. Check your connection "
-                        "and free disk space, then retry.",
-                    ))
+                    self._on_health(
+                        HealthReport(
+                            HealthState.ERROR,
+                            "The speech model couldn't be installed. Check your connection "
+                            "and free disk space, then retry.",
+                        )
+                    )
                     self._on_error("Speech model installation failed. Retry from the Models page.")
         self._sync_runtime_ui()
 
@@ -598,7 +605,9 @@ class Controller(QObject):
             self.live.history_warning.show_message(
                 "Damaged history was preserved in a local recovery folder. "
                 "A new history database is ready. Open storage settings to find its location.",
-                "warning", "Storage settings", "manage_storage",
+                "warning",
+                "Storage settings",
+                "manage_storage",
             )
         self._on_history_session_finished()
         self._apply_retention()
@@ -614,8 +623,7 @@ class Controller(QObject):
         self.live.start_button.setEnabled(not self._quitting)
         self.live.set_running(False)
         clear_live = (
-            self.settings.history.clear_live_on_stop
-            or self.settings.history.retention_days == -1
+            self.settings.history.clear_live_on_stop or self.settings.history.retention_days == -1
         )
         if self._quitting or clear_live:
             self.overlay.clear()
@@ -676,7 +684,8 @@ class Controller(QObject):
             session_id = self._session_id
             self._session_id = None
             self.sessions.end_session_async(
-                session_id, keep_empty=self._history_policy.metadata_only,
+                session_id,
+                keep_empty=self._history_policy.metadata_only,
                 finished=self.history_session_finished.emit,
             )
 
@@ -1023,8 +1032,8 @@ class Controller(QObject):
 
     # ---------- shortcuts ----------
 
-    def _register_hotkeys(self, bindings: dict[str, str]) -> None:
-        failures = self.hotkeys.register_all(bindings)
+    def _register_hotkeys(self) -> None:
+        failures = self.settings_view.shortcut_controller.reload()
         for action, reason in failures.items():
             log.info("Shortcut for %s unavailable: %s", action, reason)
         if failures and self.shell.isVisible():
@@ -1032,6 +1041,8 @@ class Controller(QObject):
             self.live.banner.show_message(first, "warning", "Change shortcut", "open_shortcuts")
 
     def _on_hotkey(self, action: str) -> None:
+        if self.settings_view.shortcut_controller.suspended:
+            return
         actions = {
             "toggle_captions": self.toggle_captions,
             "toggle_overlay": lambda: self._on_overlay_toggled(not self.settings.overlay.visible),

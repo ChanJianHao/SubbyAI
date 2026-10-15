@@ -25,6 +25,7 @@ from ..branding import APP_FULL_NAME, APP_NAME
 from ..build_info import get_build_info
 from ..core.health import HealthReport, HealthState
 from ..core.settings import Settings
+from ..core.shortcuts import SHELL_ACTIONS
 from . import theme
 from .motion import MotionStack
 from .motion_widgets import SelectionMarker
@@ -158,12 +159,16 @@ class Shell(QMainWindow):
             fit_to_screen(self, *WINDOW_SIZE)
 
     def _install_shortcuts(self) -> None:
-        for index, key in enumerate(("Ctrl+1", "Ctrl+2", "Ctrl+3")):
-            shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(lambda i=index: self.show_segment(i))
-        QShortcut(QKeySequence("Ctrl+,"), self).activated.connect(lambda: self.show_segment(2))
-        QShortcut(QKeySequence("Ctrl+W"), self).activated.connect(self.close)
-        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.request_quit)
+        handlers = {
+            "live": lambda: self.show_segment(0),
+            "history": lambda: self.show_segment(1),
+            "settings": lambda: self.show_segment(2),
+            "settings_comma": lambda: self.show_segment(2),
+            "close": self.close,
+            "quit": self.request_quit,
+        }
+        for action in SHELL_ACTIONS:
+            QShortcut(QKeySequence(action.default), self).activated.connect(handlers[action.id])
 
     # ---------- navigation ----------
 
@@ -199,7 +204,9 @@ class Shell(QMainWindow):
             return
         log.debug(
             "Main window Open requested: visible=%s minimized=%s maximized=%s",
-            self.isVisible(), self.isMinimized(), self.isMaximized(),
+            self.isVisible(),
+            self.isMinimized(),
+            self.isMaximized(),
         )
         # show() alone leaves WindowMinimized set. Clearing only that flag also
         # preserves a maximized window's state when returning from the tray.
@@ -217,7 +224,9 @@ class Shell(QMainWindow):
         self.activateWindow()
         log.debug(
             "Main window restored: visible=%s minimized=%s native_visible=%s",
-            self.isVisible(), self.isMinimized(), native_visible,
+            self.isVisible(),
+            self.isMinimized(),
+            native_visible,
         )
 
     def request_quit(self) -> None:
@@ -240,6 +249,7 @@ class Shell(QMainWindow):
         rect = QRect(*saved)
         matching = [s for s in QGuiApplication.screens() if s.availableGeometry().intersects(rect)]
         if matching:
+
             def intersection_area(screen):
                 intersection = screen.availableGeometry().intersected(rect)
                 return intersection.width() * intersection.height()

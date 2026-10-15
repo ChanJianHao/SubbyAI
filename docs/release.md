@@ -1,6 +1,6 @@
 # Release process
 
-The current patch release is **1.0.1**. Repository, release tag and application metadata must agree.
+The current patch release is **1.0.3**. Repository, release tag and application metadata must agree.
 Releases use the locked Python/dependency baseline and SHA-pinned CI actions. The build
 workflow produces reviewed artifacts; repository visibility is managed separately.
 
@@ -10,6 +10,7 @@ workflow produces reviewed artifacts; repository visibility is managed separatel
 uv sync --locked --extra dev
 uv run --no-sync ruff check src tests scripts
 uv run --no-sync pytest
+uv run --no-sync python scripts/validate_windows_shortcuts.py
 uv run --no-sync python scripts/check_release_version.py
 uv run --no-sync python scripts/audit_privacy.py --history
 uv run --no-sync python scripts/audit_dependencies.py

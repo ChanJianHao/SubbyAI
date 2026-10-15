@@ -187,7 +187,8 @@ class AdvancedEngineSheet(QDialog):
         root.setSpacing(SPACE["md"])
         intro = QLabel(
             "Choose an exact engine if you already have a preference. "
-            "More controls are available in Settings → Advanced Mode."
+            "Revisit this choice in Settings → Speech models. "
+            "Engine tuning is in Settings → Advanced Mode → Transcription & performance."
         )
         intro.setObjectName("secondary")
         intro.setWordWrap(True)

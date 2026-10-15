@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.3
+
+- Shortcuts stays visible and searchable in normal Settings. Setup points back to it.
+- Clear rebinding instructions, keyboard-accessible resets and separate global, window and
+  transcript shortcut lists. Capture pauses global shortcuts and Escape leaves bindings intact.
+- Failed Windows shortcut edits retain the previous bindings and explain how to recover.
+  Saved registration failures remain visible; stale queued activations cannot fire after rebinding.
+- Partially saved shortcut configurations use the same defaults in the editor and runtime,
+  while explicitly cleared bindings stay cleared.
+- Settings search shows an explicit empty state; changing Advanced Mode keeps selection reachable.
+- Corrected stale setup, speech-model and startup navigation guidance, and explained disabled
+  startup and transcript-retention controls.
+
 ## 1.0.0
 
 First SubbyAI release.

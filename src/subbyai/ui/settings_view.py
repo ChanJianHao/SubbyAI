@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.settings import SettingsStore
+from ..system.shortcut_settings import ShortcutSettingsController
 from . import theme
 from .motion import MotionStack
 from .motion_widgets import MotionToggle as QCheckBox
@@ -63,6 +64,7 @@ SECTIONS: tuple[tuple[str, str], ...] = (
 
 CONTENT_WIDTH = 560
 NAV_WIDTH = 200
+ADVANCED_SECTIONS = frozenset({"intelligence", "engine", "processing", "diagnostics"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,20 @@ class SettingsView(QWidget):
         self.audio = AudioSection(store, self._deps, self)
         self.intelligence = IntelligenceSection(store, self._deps, self)
         self.shortcuts = ShortcutEditor(store.settings.shortcuts.globals, self)
+        self.shortcut_controller = (
+            ShortcutSettingsController(store, self._deps.hotkeys, self)
+            if self._deps.hotkeys is not None
+            else None
+        )
+        if self.shortcut_controller is not None:
+            self.shortcut_controller.changed.connect(self._sync_shortcuts)
+            self.shortcuts.capture_changed.connect(self.shortcut_controller.set_suspended)
+            self.shortcuts.retry_requested.connect(self.shortcut_controller.retry)
+            if not self._deps.hotkeys.is_supported:
+                self.shortcuts.set_unavailable(
+                    "Global shortcuts are available on Windows. "
+                    "The shortcuts below work while SubbyAI is focused."
+                )
         self.general = GeneralSection(store, self._deps, self)
         self.about = AboutSection(self)
         self._pages: dict[str, QWidget] = {
@@ -138,6 +154,7 @@ class SettingsView(QWidget):
 
         self.nav = QListWidget(self)
         self.nav.setObjectName("nav")
+        self.nav.setAccessibleName("Settings categories")
         self.nav.setFixedWidth(NAV_WIDTH)
         # "Languages & translation" is wider than the rail. Elide it rather than
         # let the list scroll sideways — a horizontal scrollbar in a navigation
@@ -151,6 +168,11 @@ class SettingsView(QWidget):
             self.nav.addItem(label)
             self.stack.addWidget(_page(self._pages[key]))
             self._keys.append(key)
+        self.empty_page = QLabel(
+            "No settings found. Try another search, or enable Advanced Mode for technical controls."
+        )
+        self.empty_page.setWordWrap(True)
+        self.stack.addWidget(_page(self.empty_page))
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -160,13 +182,14 @@ class SettingsView(QWidget):
         rail_layout = QVBoxLayout(rail)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Find a setting…")
+        self.search.setAccessibleName("Find a setting")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter_nav)
         rail_layout.addWidget(self.search)
         self.advanced_toggle = QCheckBox("Advanced Mode")
         self.advanced_toggle.setChecked(store.settings.general.advanced_mode)
         self.advanced_toggle.setToolTip(
-            "Show performance, provider and server controls. "
+            "Show engine, translation provider, server and diagnostic controls. "
             "Your settings are preserved when hidden."
         )
         self.advanced_toggle.toggled.connect(self._toggle_advanced)
@@ -198,18 +221,20 @@ class SettingsView(QWidget):
     def _filter_nav(self, query: str = "") -> None:
         query = self.search.text().strip().casefold()
         advanced = self.advanced_toggle.isChecked()
-        advanced_keys = {"intelligence", "engine", "processing", "diagnostics", "shortcuts"}
         for index, (key, label) in enumerate(SECTIONS):
             page_text = " ".join(child.text() for child in self._pages[key].findChildren(QLabel))
             matches = query in (label + " " + page_text).casefold()
-            self.nav.item(index).setHidden((key in advanced_keys and not advanced) or not matches)
+            self.nav.item(index).setHidden(
+                (key in ADVANCED_SECTIONS and not advanced) or not matches
+            )
         current = self.nav.currentRow()
-        if current >= 0 and self.nav.item(current).isHidden():
+        if current < 0 or self.nav.item(current).isHidden():
             first = next(
                 (i for i in range(self.nav.count()) if not self.nav.item(i).isHidden()), -1
             )
-            if first >= 0:
-                self.nav.setCurrentRow(first)
+            self.nav.setCurrentRow(first)
+            if first < 0:
+                self._on_section(-1)
 
     # ---------- wiring ----------
 
@@ -230,16 +255,23 @@ class SettingsView(QWidget):
         self.shortcuts.bindings_changed.connect(self._on_shortcuts)
 
     def _on_shortcuts(self, bindings: dict) -> None:
-        """Save, re-register, and report per row what the system refused."""
-        self._store.settings.shortcuts.globals = dict(bindings)
-        self._store.notify("shortcuts")
-        manager = getattr(self._deps, "hotkeys", None)
-        if manager is not None:
-            self.shortcuts.set_failures(manager.register_all(dict(bindings)))
-        self.shortcuts_changed.emit(dict(bindings))
+        if self.shortcut_controller is not None:
+            self.shortcut_controller.apply(dict(bindings))
+        else:
+            self._store.settings.shortcuts.globals = dict(bindings)
+            self._store.notify("shortcuts")
+        self.shortcuts_changed.emit(dict(self._store.settings.shortcuts.globals))
+
+    def _sync_shortcuts(self) -> None:
+        controller = self.shortcut_controller
+        if controller is not None:
+            self.shortcuts.set_bindings(controller.bindings)
+            self.shortcuts.set_failures(
+                controller.failures if controller.manager.is_supported else {}
+            )
 
     def _on_section(self, index: int) -> None:
-        self.stack.setCurrentIndex(index)
+        self.stack.setCurrentIndex(index if index >= 0 else len(self._keys))
         self.preview_requested.emit(self._current_key() == "captions")
 
     def _current_key(self) -> str:
@@ -250,7 +282,7 @@ class SettingsView(QWidget):
 
     def show_section(self, key: str) -> None:
         if key in self._keys:
-            if key in {"intelligence", "engine", "processing", "diagnostics", "shortcuts"}:
+            if key in ADVANCED_SECTIONS:
                 self.advanced_toggle.setChecked(True)
             self.search.clear()
             self.nav.setCurrentRow(self._keys.index(key))
@@ -266,7 +298,14 @@ class SettingsView(QWidget):
         self.audio.refresh()
         self.intelligence.refresh()
         self.general.refresh()
-        self.shortcuts.set_bindings(self._store.settings.shortcuts.globals)
+        if self.shortcut_controller is not None:
+            self._sync_shortcuts()
+        else:
+            self.shortcuts.set_bindings(self._store.settings.shortcuts.globals)
+        self.advanced_toggle.blockSignals(True)
+        self.advanced_toggle.setChecked(self._store.settings.general.advanced_mode)
+        self.advanced_toggle.blockSignals(False)
+        self._filter_nav()
         self.everyday.refresh()
         self.engine.refresh()
         self.processing.refresh()

@@ -50,9 +50,11 @@ memory. Recommendations leave room for other apps; they don't promise a particul
 ![Everyday settings](docs/images/settings-light.png)
 
 Open **Speech models** to install and explicitly activate an exact model; Live shows which
-model is actually processing captions. Language selectors are searchable. Enable **Advanced Mode**
-for CPU/GPU selection, precision, phrase timing,
-translation providers, a remote speech server, shortcuts and diagnostics. Turning it off
+model is actually processing captions. Language selectors are searchable.
+**Settings → Shortcuts** is always available: select a global key combination to change it.
+Global shortcuts work even while another app is active; built-in window and transcript shortcuts
+are listed separately. Enable **Advanced Mode** for CPU/GPU selection, precision, phrase timing,
+translation providers, a remote speech server and diagnostics. Turning it off
 preserves all your settings. Technical changes show as **Custom** until you choose a profile.
 
 ## Made for watching

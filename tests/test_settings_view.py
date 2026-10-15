@@ -422,6 +422,7 @@ def press(editor: ShortcutEditor, action_id: str, key, modifiers) -> None:
     editor.start_recording(action_id)
     row = editor.row(action_id)
     row.chip.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, modifiers))
+    row.chip.keyReleaseEvent(QKeyEvent(QEvent.Type.KeyRelease, key, modifiers))
 
 
 CTRL_ALT = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
@@ -505,6 +506,8 @@ def test_registration_failures_are_shown_on_their_row(qt_app):
 
 def test_the_view_saves_and_re_registers_shortcuts(settings_store, spy):
     class FakeHotkeys:
+        is_supported = True
+
         def __init__(self) -> None:
             self.registered: list[dict] = []
 

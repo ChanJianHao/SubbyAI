@@ -41,12 +41,12 @@ nothing to install and no DLLs to copy. If the card cannot be used, SubbyAI fall
 processor and tells you.
 
 The check runs once in a separate short-lived process and is remembered, so it costs nothing on
-later launches. If you change hardware, use "Check again" in Settings → Advanced Mode → Models & providers.
+later launches. If you change hardware, use "Check again" in Settings → Speech models.
 
 ## Running in the background
 
 Closing the window keeps SubbyAI in the tray so shortcuts and captions keep working; you'll be told
-the first time. Settings → Advanced Mode → General can start SubbyAI with Windows (off by default)
+the first time. Settings → General can start SubbyAI with Windows (off by default)
 and start captioning automatically.
 
 ## Where things live

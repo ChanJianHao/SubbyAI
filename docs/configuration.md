@@ -45,6 +45,24 @@ the arrow keys and Enter, or click a language. Unsupported input languages are d
 the selected model. Automatic detection is offered where supported. Changes reconnect a running
 session safely; Live reports the language configuration used by that session.
 
+## Shortcuts
+
+**Settings → Shortcuts** is always visible and searchable, with Advanced Mode off or on.
+Select a global key combination with the mouse, or Tab to it and press Enter or Space,
+then press the new keys. Escape cancels; Backspace clears. Use the reset arrow beside
+an action to restore its default, or **Reset all shortcuts** (with Undo) to restore them all.
+If another SubbyAI action uses the keys, press the same combination again to confirm takeover.
+
+On Windows, global shortcuts work while another application is active, including when SubbyAI
+is in the tray. They pause during rebinding so the captured keys cannot trigger an action.
+Windows-reserved and unsupported combinations are explained inline. If Windows rejects an edit
+(for example, another app owns the keys), the previous bindings remain saved; choose other keys
+or **Try again** after freeing them. A saved binding that cannot register at startup is marked
+unavailable with a retry action. Changes take effect immediately and persist after restarting.
+
+The page also lists fixed shortcuts for the focused SubbyAI window and saved transcripts.
+Global shortcuts are unavailable on macOS; the page explains this and still lists window shortcuts.
+
 ## Advanced categories
 
 **Translation providers** manages translation fallback order and optional transcript assistance.

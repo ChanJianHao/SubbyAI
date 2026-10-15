@@ -62,6 +62,11 @@ jobs:
           uv run --no-sync python scripts/build_app.py
           uv run --no-sync python scripts/verify_package.py --require-models
           uv run --no-sync python scripts/audit_privacy.py --artifacts ${{ matrix.app }}
+      - name: Windows shortcut registration and recovery
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --no-sync python scripts/validate_windows_shortcuts.py
       - name: Windows installer and portable archive
         if: runner.os == 'Windows'
         shell: pwsh

@@ -29,7 +29,8 @@ cannot discover that behavior. Consult your provider's retention and billing pol
 
 ## Text translation
 
-Models & providers supports the built-in translator, Ollama, LM Studio and OpenAI-compatible
+Settings → Advanced Mode → Translation providers supports the built-in translator,
+Ollama, LM Studio and OpenAI-compatible
 chat APIs. Enable and order the providers you want; the chain attempts them in order and skips
 repeatedly failing providers temporarily. Original captions remain available on failure.
 A compatible endpoint receives the current caption and bounded recent context, not PCM audio.

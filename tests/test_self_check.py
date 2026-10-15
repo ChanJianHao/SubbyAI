@@ -1,10 +1,18 @@
 """Diagnostic fixtures reject malformed input without reading private audio."""
 
+import tempfile
 import wave
 
 import pytest
 
-from subbyai.self_check import _fixture_audio
+from subbyai.self_check import _check_shortcuts, _fixture_audio
+
+
+def test_frozen_shortcut_acceptance_exercises_reachable_settings_and_persistence(
+    qt_app, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    assert _check_shortcuts() == []
 
 
 @pytest.mark.parametrize("rate,channels,width", [(8000, 1, 2), (16000, 2, 2), (16000, 1, 1)])

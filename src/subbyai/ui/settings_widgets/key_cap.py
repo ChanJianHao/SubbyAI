@@ -37,6 +37,10 @@ def chord_from_event(event) -> str:
     if key in _MODIFIER_KEYS:
         return ""
     modifiers = event.modifiers()
+    if modifiers & Qt.KeyboardModifier.KeypadModifier:
+        return "Numpad+" + QKeySequence(key).toString()
+    if modifiers & Qt.KeyboardModifier.GroupSwitchModifier:
+        return "AltGr+" + QKeySequence(key).toString()
     parts = []
     if modifiers & Qt.KeyboardModifier.ControlModifier:
         parts.append("Ctrl")
@@ -65,6 +69,9 @@ class KeyCap(QPushButton):
         # construction and reads both of these.
         self._recording = False
         self._tone = "normal"
+        self._pending_chord = ""
+        self._pending_key = 0
+        self._clear_pending = False
         super().__init__(parent)
         self.setFont(theme.mono_font(12))
         self.setMinimumWidth(132)
@@ -77,6 +84,9 @@ class KeyCap(QPushButton):
 
     def set_recording(self, on: bool) -> None:
         self._recording = on
+        self._pending_chord = ""
+        self._pending_key = 0
+        self._clear_pending = False
         if on:
             self.setText(RECORDING_LABEL)
             self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -99,27 +109,57 @@ class KeyCap(QPushButton):
             f" border: 1px solid {border}; border-radius: {RADIUS['sm']}px;"
             " padding: 6px 12px; }"
             f"QPushButton:hover {{ border-color: {palette.accent}; }}"
+            f"QPushButton:focus {{ border: 2px solid {palette.accent}; padding: 5px 11px; }}"
         )
 
     def event(self, event) -> bool:
         if self._recording and event.type() == QEvent.Type.ShortcutOverride:
             event.accept()
             return True
+        if self._recording and event.type() == QEvent.Type.KeyPress:
+            self.keyPressEvent(event)  # Includes Tab, which QWidget otherwise uses for focus.
+            return True
         return super().event(event)
 
     def keyPressEvent(self, event) -> None:
         if not self._recording:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.click()
+                event.accept()
+                return
             super().keyPressEvent(event)
+            return
+        event.accept()
+        if event.isAutoRepeat():
             return
         key = int(event.key())
         if key == int(Qt.Key.Key_Escape):
             self.cancelled.emit()
             return
+        if self._pending_key:
+            return
         if key == int(Qt.Key.Key_Backspace) and not event.modifiers():
-            self.cleared.emit()
+            self._clear_pending = True
+            self._pending_key = key
             return
         chord = chord_from_event(event)
         if chord:
+            self._pending_chord = chord
+            self._pending_key = key
+
+    def keyReleaseEvent(self, event) -> None:
+        if not self._recording:
+            super().keyReleaseEvent(event)
+            return
+        event.accept()
+        if event.isAutoRepeat() or int(event.key()) != self._pending_key:
+            return
+        self._pending_key = 0
+        if self._clear_pending:
+            self._clear_pending = False
+            self.cleared.emit()
+        elif self._pending_chord:
+            chord, self._pending_chord = self._pending_chord, ""
             self.captured.emit(chord)
 
     def focusOutEvent(self, event) -> None:

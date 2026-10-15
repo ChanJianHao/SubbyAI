@@ -97,6 +97,29 @@ def test_surfaces_are_registered_in_order(controller):
     assert controller.shell.current_segment == 0  # Live is the default destination
 
 
+def test_shortcut_edit_registers_once_through_the_running_application(controller, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        controller.hotkeys, "register_all", lambda bindings: calls.append(dict(bindings)) or {}
+    )
+    controller.settings_view.shortcuts.propose("toggle_captions", "Ctrl+Alt+J")
+    assert len(calls) == 1
+    assert calls[0]["toggle_captions"] == "Ctrl+Alt+J"
+    reloaded = SettingsStore(controller.store._path)
+    assert reloaded.settings.shortcuts.globals["toggle_captions"] == "Ctrl+Alt+J"
+
+
+def test_global_actions_are_suspended_during_rebinding(controller, monkeypatch):
+    monkeypatch.setattr(controller.hotkeys, "register_all", lambda bindings: {})
+    size = controller.settings.overlay.font_size
+    controller.settings_view.shortcuts.start_recording("caption_bigger")
+    controller._on_hotkey("caption_bigger")
+    assert controller.settings.overlay.font_size == size
+    controller.settings_view.shortcuts.cancel_recording()
+    controller._on_hotkey("caption_bigger")
+    assert controller.settings.overlay.font_size == size + 2
+
+
 def test_tray_open_restores_minimized_window_without_restarting_captioning(controller, qt_app):
     from PySide6.QtTest import QTest
 
@@ -352,7 +375,9 @@ def test_the_settings_screen_can_actually_store_a_key(controller):
 
 
 def test_history_failure_does_not_break_stop_or_keep_session_ownership(
-    controller, monkeypatch, qt_app,
+    controller,
+    monkeypatch,
+    qt_app,
 ):
     import contextlib
     import sqlite3
@@ -385,7 +410,9 @@ def test_storage_warning_survives_healthy_audio(controller):
 
 
 def test_failed_history_retry_warns_again_without_consuming_prior_write_loss(
-    controller, monkeypatch, wait_for_ui,
+    controller,
+    monkeypatch,
+    wait_for_ui,
 ):
     import contextlib
     import sqlite3
@@ -472,9 +499,14 @@ def test_late_caption_update_cannot_cross_a_history_policy_change(controller):
     controller.settings.history.save_original = False
     controller.store.notify("history")
     second = controller._session_id
-    controller._on_segment_updated(original.with_translation(
-        "late first translation", "en", "Fake", PrivacyTier.ON_DEVICE,
-    ))
+    controller._on_segment_updated(
+        original.with_translation(
+            "late first translation",
+            "en",
+            "Fake",
+            PrivacyTier.ON_DEVICE,
+        )
+    )
     controller._on_segment(_segment("second original", "second translation"))
     controller.sessions.flush()
     assert [s.translation for s in controller.sessions.segments(first)] == ["first translation"]
@@ -490,9 +522,14 @@ def test_quit_drains_final_caption_to_opt_in_history_without_reopening_ui(contro
     controller.overlay.close()
     final = _segment("final buffered words")
     controller._on_segment(final)
-    controller._on_segment_updated(final.with_translation(
-        "final translation", "en", "Fake", PrivacyTier.ON_DEVICE,
-    ))
+    controller._on_segment_updated(
+        final.with_translation(
+            "final translation",
+            "en",
+            "Fake",
+            PrivacyTier.ON_DEVICE,
+        )
+    )
     controller._end_session()
     controller.sessions.flush()
     assert not controller.overlay.isVisible()

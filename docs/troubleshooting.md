@@ -49,7 +49,7 @@ hardware information; they do not promise a measured latency.
 ## My graphics card isn't being used
 
 SubbyAI checks for a card once and remembers the answer. If you've just installed a driver or added
-an eGPU, use "Check again" in Settings → Advanced Mode → Models & providers.
+an eGPU, use "Check again" in Settings → Speech models.
 
 CUDA 12 needs an NVIDIA driver of 525 or newer — no CUDA toolkit install is needed. If the card
 can't be used, SubbyAI falls back to the processor and says so rather than failing.
@@ -65,8 +65,12 @@ SubbyAI does not inject code into games. Compatibility depends on the game and a
 
 ## A shortcut doesn't work
 
-Another app registered it first. Settings → Shortcuts shows which one failed; pick a different
-combination. Shortcuts on the `Ctrl+Alt` cluster are least likely to clash.
+Open Settings → Shortcuts (Advanced Mode is not needed). Select a global key combination
+to change it; the page explains unavailable keys beside the action. Another app may have
+registered them first. Choose different keys, or free them in that app and use **Try again**.
+A rejected edit keeps your previous bindings. Global shortcuts pause while you rebind them.
+Window and transcript shortcuts work only while their SubbyAI window or transcript is focused.
+Windows owns some combinations; numpad and AltGr-specific combinations are not supported.
 
 ## Translation is wrong or missing
 

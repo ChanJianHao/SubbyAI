@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.events import SessionInfo
+from ..core.shortcuts import TRANSCRIPT_ACTIONS
 from ..storage.session_store import SessionStore
 from . import theme
 from .exports import (
@@ -192,20 +193,19 @@ class TranscriptView(QWidget):
 
     def _install_shortcuts(self) -> None:
         scope = Qt.ShortcutContext.WidgetWithChildrenShortcut
-        for sequence, slot in (
-            ("Ctrl+F", self.open_find),
-            ("Ctrl+E", self.open_export_menu),
-            ("Ctrl+C", self.copy_selection),
-            ("F2", self.begin_rename),
-            ("Alt+Left", self.back_requested.emit),
-            ("Shift+Return", self.find_previous),
-        ):
-            shortcut = QShortcut(QKeySequence(sequence), self)
+        handlers = {
+            "find": self.open_find,
+            "export": self.open_export_menu,
+            "copy": self.copy_selection,
+            "rename": self.begin_rename,
+            "back": self.back_requested.emit,
+            "previous": self.find_previous,
+            "escape": self._on_escape,
+        }
+        for action in TRANSCRIPT_ACTIONS:
+            shortcut = QShortcut(QKeySequence(action.default), self)
             shortcut.setContext(scope)
-            shortcut.activated.connect(slot)
-        escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        escape.setContext(scope)
-        escape.activated.connect(self._on_escape)
+            shortcut.activated.connect(handlers[action.id])
 
     # ---------- public API ----------
 

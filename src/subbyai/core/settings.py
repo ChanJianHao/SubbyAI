@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from .shortcuts import bindings_with_defaults, default_bindings
 
 log = logging.getLogger(__name__)
 
@@ -193,18 +194,7 @@ class HistorySettings:
 class ShortcutSettings:
     """Action id -> key sequence. Empty string means unbound."""
 
-    globals: dict[str, str] = field(
-        default_factory=lambda: {
-            "toggle_captions": "Ctrl+Alt+C",
-            "toggle_overlay": "Ctrl+Alt+O",
-            "toggle_click_through": "Ctrl+Alt+T",
-            "toggle_translation": "Ctrl+Alt+L",
-            "caption_bigger": "Ctrl+Alt+Up",
-            "caption_smaller": "Ctrl+Alt+Down",
-            "scrub_back": "Ctrl+Alt+Left",
-            "scrub_forward": "Ctrl+Alt+Right",
-        }
-    )
+    globals: dict[str, str] = field(default_factory=default_bindings)
 
 
 @dataclass
@@ -563,11 +553,13 @@ def _validate(settings: Settings) -> None:
         for key, value in settings.overlay.geometry.items()
         if (valid := _geometry(value))
     }
-    settings.shortcuts.globals = {
-        key: value[:80]
-        for key, value in settings.shortcuts.globals.items()
-        if key in defaults.shortcuts.globals and isinstance(value, str)
-    }
+    settings.shortcuts.globals = bindings_with_defaults(
+        {
+            key: value[:80]
+            for key, value in settings.shortcuts.globals.items()
+            if key in defaults.shortcuts.globals and isinstance(value, str)
+        }
+    )
     settings.intelligence.translation_order = [
         value for value in settings.intelligence.translation_order[:32] if isinstance(value, str)
     ]

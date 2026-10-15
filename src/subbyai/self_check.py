@@ -40,6 +40,7 @@ def run_self_check(
             ("imports", _check_imports),
             ("build identity", _check_build_info),
             ("Qt", _check_ui),
+            ("shortcut settings", _check_shortcuts),
             ("CTranslate2", _check_ctranslate2),
             ("ONNX Runtime", _check_onnx_runtime),
             (
@@ -85,6 +86,8 @@ def _check_imports() -> list[str]:
         "subbyai.translation.llm",
         "subbyai.storage.session_store",
         "subbyai.system.hotkeys",
+        "subbyai.system.shortcut_settings",
+        "subbyai.core.shortcuts",
     ]
     failures = []
     for name in modules:
@@ -104,6 +107,54 @@ def _check_build_info() -> list[str]:
     print(f"Build identity: {build.display_text}")
     if build.commit:
         print(f"Build source: {build.commit} ({'dirty' if build.source_dirty else 'clean'})")
+    return []
+
+
+def _check_shortcuts() -> list[str]:
+    """Verify discoverability and persisted editing in the actual frozen UI."""
+    import tempfile
+
+    from PySide6.QtWidgets import QApplication
+
+    from .core.settings import SettingsStore
+    from .core.shortcuts import default_bindings
+    from .ui.settings_view import SettingsView
+
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "settings.json"
+        store = SettingsStore(profile)
+        view = SettingsView(store)
+        try:
+            view.show_section("shortcuts")
+            if view.advanced_toggle.isChecked() or view.nav.currentItem().isHidden():
+                return ["Shortcuts is not reachable in normal Settings"]
+            view.search.setText("shortcut")
+            if view.nav.currentItem() is None or view.nav.currentItem().isHidden():
+                return ["Shortcuts is not searchable in normal Settings"]
+            view.shortcuts.propose("toggle_captions", "Ctrl+Alt+J")
+            reloaded = SettingsStore(profile).settings.shortcuts.globals
+            if reloaded["toggle_captions"] != "Ctrl+Alt+J":
+                return ["shortcut edits did not persist"]
+            view.shortcuts.clear("toggle_captions")
+            if SettingsStore(profile).settings.shortcuts.globals["toggle_captions"]:
+                return ["cleared shortcut did not persist"]
+            view.shortcuts.reset("toggle_captions")
+            if SettingsStore(profile).settings.shortcuts.globals != default_bindings():
+                return ["reset shortcut did not persist"]
+            view.show_section("diagnostics")
+            view.search.setText("diagnostics")
+            view.advanced_toggle.setChecked(False)
+            if view.nav.currentRow() != -1 or view.stack.currentWidget().widget() is None:
+                return ["filtered Settings retained an invisible selection"]
+            view.show_section("shortcuts")
+            if view.advanced_toggle.isChecked() or view.nav.currentItem().isHidden():
+                return ["Settings did not recover from an empty search"]
+        finally:
+            view.close()
+            view.deleteLater()
+            app.processEvents()
+    print("Shortcut settings: OK (normal navigation, search, persisted edits, clear, reset)")
     return []
 
 

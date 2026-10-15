@@ -10,7 +10,7 @@ import logging
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 
@@ -33,7 +33,6 @@ _MODIFIER_ALIASES: dict[str, int] = {
     "alt": MOD_ALT,
     "opt": MOD_ALT,
     "option": MOD_ALT,
-    "altgr": MOD_ALT,
     "shift": MOD_SHIFT,
     "win": MOD_WIN,
     "meta": MOD_WIN,
@@ -190,6 +189,8 @@ def is_valid_global(text: str) -> tuple[bool, str]:
         return False, f"{text.strip()} isn't a key combination we recognise."
 
     modifiers, vk = parsed
+    if vk == 0x7B:
+        return False, "Windows reserves F12 for debugging. Choose another key."
     if modifiers & MOD_WIN:
         return False, "Windows keeps every shortcut that uses the Windows key."
     if modifiers == 0:
@@ -355,7 +356,7 @@ _CLASS_NAME = "SubbyAIHotkeyWindow"
 _class_lock = threading.Lock()
 _class_atom = 0
 _wndproc_ref = None  # the WNDPROC thunk must outlive the window class
-_owners: dict[int, HotkeyManager] = {}  # hwnd -> manager that created it
+_owners: dict[int, tuple[HotkeyManager, _Registration]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +365,17 @@ class _Binding:
     sequence: str
     modifiers: int
     vk: int
+
+
+@dataclass
+class _Registration:
+    generation: int
+    bindings: dict[int, _Binding]
+    ready: threading.Event = field(default_factory=threading.Event)
+    stopped: threading.Event = field(default_factory=threading.Event)
+    hwnd: int = 0
+    failures: dict[str, str] = field(default_factory=dict)
+    registered: set[int] = field(default_factory=set)
 
 
 class HotkeyManager(QObject):
@@ -375,15 +387,14 @@ class HotkeyManager(QObject):
 
     activated = Signal(str)
 
-    _fired = Signal(str)
+    _fired = Signal(int, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.is_supported: bool = IS_WINDOWS
         self._thread: threading.Thread | None = None
-        self._hwnd: int = 0
-        self._bindings: dict[int, _Binding] = {}
-        self._result: dict[str, str] = {}
+        self._generation = 0
+        self._registration: _Registration | None = None
         # Queued: _fired is emitted from the Win32 message loop, activated is
         # re-emitted here, on the thread that owns this object.
         self._fired.connect(self._republish, Qt.ConnectionType.QueuedConnection)
@@ -396,7 +407,12 @@ class HotkeyManager(QObject):
         A reason means that one binding is dead; the rest still work. Actions
         bound to an empty string are deliberately unbound and never reported.
         """
-        self.unregister_all()
+        if not self.unregister_all():
+            return {
+                action: "Shortcuts are still resetting. Try again in a moment."
+                for action, sequence in bindings.items()
+                if sequence.strip()
+            }
 
         failures: dict[str, str] = {}
         wanted: list[_Binding] = []
@@ -430,40 +446,55 @@ class HotkeyManager(QObject):
         failures.update(self._start(wanted))
         return failures
 
-    def unregister_all(self) -> None:
+    def unregister_all(self) -> bool:
         """Drop every registration and stop the message loop. Safe to repeat."""
-        thread, hwnd = self._thread, self._hwnd
-        self._thread, self._hwnd = None, 0
-        self._bindings = {}
+        self._generation += 1  # Invalidates activations already queued to Qt.
+        thread, state = self._thread, self._registration
+        if state is not None:
+            state.stopped.set()
         if thread is None or not thread.is_alive():
-            return
-        if hwnd:
-            _user32.PostMessageW(hwnd, _WM_CHIARO_QUIT, 0, 0)
+            self._thread, self._registration = None, None
+            return True
+        if state is not None and state.hwnd:
+            _user32.PostMessageW(state.hwnd, _WM_CHIARO_QUIT, 0, 0)
         thread.join(timeout=_STOP_TIMEOUT)
         if thread.is_alive():
             log.warning("Hotkey thread did not stop; shortcuts may linger until exit")
+            return False
+        self._thread, self._registration = None, None
+        return True
 
     # ---------- internals ----------
 
-    @Slot(str)
-    def _republish(self, action: str) -> None:
-        self.activated.emit(action)
+    @property
+    def registered_bindings(self) -> dict[str, str]:
+        state = self._registration
+        if state is None or state.stopped.is_set():
+            return {}
+        return {
+            state.bindings[key].action: state.bindings[key].sequence for key in state.registered
+        }
+
+    @Slot(int, str)
+    def _republish(self, generation: int, action: str) -> None:
+        if generation == self._generation:
+            self.activated.emit(action)
 
     def _start(self, wanted: list[_Binding]) -> dict[str, str]:
-        self._bindings = dict(enumerate(wanted, start=1))
-        self._result = {}
-        ready = threading.Event()
+        state = _Registration(self._generation, dict(enumerate(wanted, start=1)))
+        self._registration = state
         thread = threading.Thread(
-            target=self._run, args=(ready,), name="subbyai-hotkeys", daemon=True
+            target=self._run, args=(state,), name="subbyai-hotkeys", daemon=True
         )
         self._thread = thread
         thread.start()
-        if not ready.wait(_START_TIMEOUT):
+        if not state.ready.wait(_START_TIMEOUT):
             log.warning("Hotkey thread did not come up within %.0fs", _START_TIMEOUT)
+            self.unregister_all()  # A late start must never acquire unreported hotkeys.
             return {binding.action: _GENERIC_FAILURE for binding in wanted}
-        return dict(self._result)
+        return dict(state.failures)
 
-    def _run(self, ready: threading.Event) -> None:
+    def _run(self, state: _Registration) -> None:
         """Message-loop thread: owns the window and therefore the hotkeys."""
         hwnd = 0
         registered: list[int] = []
@@ -471,31 +502,33 @@ class HotkeyManager(QObject):
         try:
             hwnd = _create_message_window()
             if hwnd:
-                _owners[hwnd] = self
-                for hotkey_id, binding in self._bindings.items():
+                _owners[hwnd] = (self, state)
+                for hotkey_id, binding in state.bindings.items():
+                    if state.stopped.is_set():
+                        break
                     flags = binding.modifiers | MOD_NOREPEAT
                     if _user32.RegisterHotKey(hwnd, hotkey_id, flags, binding.vk):
                         registered.append(hotkey_id)
+                        state.registered.add(hotkey_id)
                     else:
                         failures[binding.action] = _failure_reason(
                             ctypes.get_last_error(), binding.sequence
                         )
             else:
-                failures = {b.action: _GENERIC_FAILURE for b in self._bindings.values()}
+                failures = {b.action: _GENERIC_FAILURE for b in state.bindings.values()}
         except Exception:
             log.exception("Global hotkeys could not be registered")
-            failures = {b.action: _GENERIC_FAILURE for b in self._bindings.values()}
-            hwnd = 0
+            failures = {b.action: _GENERIC_FAILURE for b in state.bindings.values()}
         finally:
-            self._hwnd = hwnd
-            self._result = failures
-            ready.set()
+            state.hwnd = hwnd
+            state.failures = failures
+            state.ready.set()
 
         if not hwnd:
             return
         try:
             msg = wintypes.MSG()
-            while True:
+            while not state.stopped.is_set():
                 got = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
                 if got in (0, -1):  # WM_QUIT, or an error we cannot recover from
                     break
@@ -503,15 +536,17 @@ class HotkeyManager(QObject):
         except Exception:
             log.exception("Hotkey message loop stopped")
         finally:
+            state.stopped.set()
             for hotkey_id in registered:
                 _user32.UnregisterHotKey(hwnd, hotkey_id)
+            state.registered.clear()
             _owners.pop(hwnd, None)
             _user32.DestroyWindow(hwnd)
 
-    def _on_hotkey(self, hotkey_id: int) -> None:
-        binding = self._bindings.get(hotkey_id)
-        if binding is not None:
-            self._fired.emit(binding.action)
+    def _on_hotkey(self, hotkey_id: int, state: _Registration) -> None:
+        binding = state.bindings.get(hotkey_id)
+        if binding is not None and hotkey_id in state.registered and not state.stopped.is_set():
+            self._fired.emit(state.generation, binding.action)
 
 
 def _unsupported_reason() -> str:
@@ -533,9 +568,10 @@ def _dispatch(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     """Window procedure. Runs on the hotkey thread; must never raise into C."""
     try:
         if msg == _WM_HOTKEY:
-            owner = _owners.get(hwnd or 0)
-            if owner is not None:
-                owner._on_hotkey(int(wparam))
+            entry = _owners.get(hwnd or 0)
+            if entry is not None:
+                owner, state = entry
+                owner._on_hotkey(int(wparam), state)
             return 0
         if msg == _WM_CHIARO_QUIT:
             _user32.PostQuitMessage(0)

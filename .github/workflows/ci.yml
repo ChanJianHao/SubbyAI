@@ -47,3 +47,8 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           HF_HUB_OFFLINE: '1'
         run: uv run --no-sync pytest tests --junitxml=build/test-results.xml
+      - name: Windows shortcut registration and recovery
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run --no-sync python scripts/validate_windows_shortcuts.py

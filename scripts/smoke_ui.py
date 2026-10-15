@@ -99,8 +99,9 @@ def main() -> int:
             live.add_segment(segment)
             block = live._segment_blocks[segment.id]
             live.update_segment(
-                segment.with_translation("Un petit bonjour de Mochi.", "fr", "Local",
-                                         PrivacyTier.ON_DEVICE)
+                segment.with_translation(
+                    "Un petit bonjour de Mochi.", "fr", "Local", PrivacyTier.ON_DEVICE
+                )
             )
             assert live._segment_blocks[segment.id] is block
             overlay.show_segment(segment)
@@ -120,6 +121,39 @@ def main() -> int:
             QTest.qWait(260)
             assert not settings.advanced_toggle.isChecked()
             shell.grab().save(str(args.output / f"models-{mode}.png"))
+            settings.show_section("shortcuts")
+            assert not settings.advanced_toggle.isChecked()
+            row = settings.shortcuts.row("toggle_captions")
+            row.chip.setFocus()
+            QTest.keyClick(row.chip, Qt.Key.Key_Return)
+            assert row.chip.recording
+            QTest.keyClick(
+                row.chip,
+                Qt.Key.Key_J,
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
+            )
+            assert settings.shortcuts.bindings()["toggle_captions"] == "Ctrl+Alt+J"
+            QTest.keyClick(row.chip, Qt.Key.Key_Return)
+            QTest.keyClick(row.chip, Qt.Key.Key_Escape)
+            assert settings.shortcuts.bindings()["toggle_captions"] == "Ctrl+Alt+J"
+            settings.shortcuts.reset_all()
+            settings.search.setText("shortcut")
+            assert not settings.nav.currentItem().isHidden()
+            settings.search.setText("no such setting 8675309")
+            assert settings.nav.currentRow() == -1
+            settings.show_section("diagnostics")
+            settings.search.setText("diagnostics")
+            settings.advanced_toggle.setChecked(False)
+            assert settings.nav.currentRow() == -1
+            settings.show_section("shortcuts")
+            assert not settings.advanced_toggle.isChecked()
+            theme.apply(app, mode, text_scale=1.5, reduce_motion=True)
+            shell.resize(640, 460)
+            app.processEvents()
+            assert settings.stack.currentWidget().horizontalScrollBar().maximum() == 0
+            shell.grab().save(str(args.output / f"shortcuts-narrow-large-text-{mode}.png"))
+            theme.apply(app, mode, reduce_motion=False)
+            shell.resize(880, 620)
             settings.show_section("languages")
             QTest.qWait(260)
             settings.languages.hear.showPopup()

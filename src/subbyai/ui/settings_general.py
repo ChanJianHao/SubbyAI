@@ -124,7 +124,8 @@ class GeneralSection(SettingsSection):
         self.reduce_motion = QCheckBox(self)
         self.reduce_motion.toggled.connect(self._on_reduce_motion)
         group.add_row(
-            "Reduce motion", self.reduce_motion,
+            "Reduce motion",
+            self.reduce_motion,
             "Keep transitions still. Your system's reduced-motion preference is always respected.",
         )
         self.app_language = compact_combo(QComboBox(self))
@@ -147,7 +148,11 @@ class GeneralSection(SettingsSection):
         group.add_row(f"Start {APP_NAME} when this computer starts", self.start_with_os)
         self.autostart_captions = QCheckBox(self)
         self.autostart_captions.toggled.connect(self._on_autostart)
-        self.autostart_row = group.add_row("Start captioning right away", self.autostart_captions)
+        self.autostart_row = group.add_row(
+            "Start captioning right away",
+            self.autostart_captions,
+            "Turn on starting with this computer to enable this option.",
+        )
         return group
 
     def _build_history(self) -> Group:
@@ -163,7 +168,11 @@ class GeneralSection(SettingsSection):
         for label, days in RETENTIONS:
             self.retention.addItem(label, days)
         self.retention.currentIndexChanged.connect(self._on_retention)
-        self.retention_row = group.add_row("Keep them for", self.retention)
+        self.retention_row = group.add_row(
+            "Keep them for",
+            self.retention,
+            "Turn on Save what you caption to choose how long transcripts are kept.",
+        )
         self.save_original = QCheckBox("Save original words", self)
         self.save_translation = QCheckBox("Save translated subtitles", self)
         self.clear_live_on_stop = QCheckBox("Clear the Live transcript when I stop", self)

@@ -28,6 +28,7 @@ fonts, which are not bundled assets.
 | `capture_ui.py` | Render actual widgets with fictional captions and no audio |
 | `smoke_ui.py` | Exercise navigation, switches, notices, progress and reduced motion |
 | `smoke_windows_launch.py` | Launch/close the frozen app with an isolated Unicode profile |
+| `validate_windows_shortcuts.py` | Real Windows hotkey ownership, live edits, collision rollback, retry and restart |
 | `make_icon.py` | Generate original Qt artwork and application icons |
 | `make_brand_assets.py` | Render matching repository, social preview and installer art |
 | `e2e_smoke.py --translate fr` | Exercise Windows loopback, recognition and local translation |
