@@ -1,4 +1,4 @@
-# Shortcut and Settings audit · 1.0.3
+# Shortcut and Settings audit · 1.0.4
 
 Issue #2 exposed a mismatch between setup and later navigation: setup introduced global shortcuts,
 but normal Settings hid their editor and direct navigation silently enabled Advanced Mode.
@@ -16,6 +16,7 @@ but normal Settings hid their editor and direct navigation silently enabled Adva
 | Setup and help | Setup points to Settings → Shortcuts and Settings → Speech models. Corrected stale Models & providers and Advanced-only General paths in installation, troubleshooting and provider help. |
 | Platform support | macOS setup no longer advertises functioning Windows global keys. Settings retains the page, explains availability and lists usable window/transcript keys. |
 | Disabled controls | Startup captioning explains its start-with-computer dependency; transcript retention explains its saving dependency. Existing app-language, custom-style, model compatibility and language controls already explain their availability. |
+| Release verification | Reviewing the 1.0.3 draft's actual logs exposed a Windows Unicode-print failure masked by a later successful audit. The draft was withheld. Diagnostics now use UTF-8, and command groups fail immediately on native command errors. |
 
 ## Information architecture review
 
@@ -53,5 +54,5 @@ layouts at multiple display scales. This evidence does not claim testing every p
 layout, audio device or monitor arrangement.
 
 The full formatter check was compared with untouched main: 53 files originally required formatting;
-47 unchanged legacy files still do. Every Python file changed for this fix is formatter-clean.
+46 unchanged legacy files still do. Every Python file changed for this fix is formatter-clean.
 Formatting is not an existing CI/release gate; the configured full Ruff lint gate remains enforced.

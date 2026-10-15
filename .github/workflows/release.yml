@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -60,7 +64,7 @@ jobs:
       - name: Freeze and verify
         run: |
           uv run --no-sync python scripts/build_app.py
-          uv run --no-sync python scripts/verify_package.py --require-models
+          uv run --no-sync python scripts/verify_package.py --require-models --expected-commit ${{ github.sha }}
           uv run --no-sync python scripts/audit_privacy.py --artifacts ${{ matrix.app }}
       - name: Windows shortcut registration and recovery
         if: runner.os == 'Windows'

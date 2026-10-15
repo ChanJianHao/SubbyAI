@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.3
+## 1.0.4
 
 - Shortcuts stays visible and searchable in normal Settings. Setup points back to it.
 - Clear rebinding instructions, keyboard-accessible resets and separate global, window and
@@ -12,6 +12,10 @@
 - Settings search shows an explicit empty state; changing Advanced Mode keeps selection reachable.
 - Corrected stale setup, speech-model and startup navigation guidance, and explained disabled
   startup and transcript-retention controls.
+- Windows package diagnostics preserve Unicode output. CI and release command groups stop
+  on the first failed native command, so a later successful audit cannot mask a failed check.
+
+The earlier 1.0.3 draft was withheld after release-log review found this verification failure.
 
 ## 1.0.0
 

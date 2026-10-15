@@ -1,6 +1,6 @@
 """Run fixed Qt, recognition and translation checks inside the frozen binary.
 
-    python scripts/verify_package.py --require-models
+python scripts/verify_package.py --require-models
 """
 
 from __future__ import annotations
@@ -19,6 +19,9 @@ CANDIDATES = [
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", type=Path)
     parser.add_argument("--expected-commit", help="Require this exact clean source revision")
@@ -34,7 +37,8 @@ def main() -> int:
             [str(app), "--self-check", *forwarded],
             capture_output=True,
             text=True,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
     except subprocess.TimeoutExpired as exc:

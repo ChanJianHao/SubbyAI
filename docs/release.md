@@ -1,6 +1,6 @@
 # Release process
 
-The current patch release is **1.0.3**. Repository, release tag and application metadata must agree.
+The current patch release is **1.0.4**. Repository, release tag and application metadata must agree.
 Releases use the locked Python/dependency baseline and SHA-pinned CI actions. The build
 workflow produces reviewed artifacts; repository visibility is managed separately.
 
@@ -25,6 +25,10 @@ uv run --no-sync python scripts/audit_privacy.py --artifacts dist/SubbyAI
 Run Gitleaks over both the release tree and every reachable commit, with redacted reports.
 Never suppress a failed privacy or vulnerability gate merely to build. Network audit failures
 are failures, not clean results. See [repository hygiene](repository-hygiene.md).
+CI and release command groups use [Bash with fail-fast behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell) on every runner. The explicit
+PowerShell installer step checks native exit codes. Frozen diagnostics and their verifier use
+UTF-8, including when the Windows console uses another code page. Review the actual job logs
+and completion reports before publishing the draft; a green workflow alone is insufficient.
 
 ## Distribution
 

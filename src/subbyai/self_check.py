@@ -21,11 +21,11 @@ def run_self_check(
     release workflow prepares pinned fixtures before testing the frozen binary.
     ``model_cache`` optionally selects an isolated speech-model test cache.
     """
-    # The check translates real text, and a Windows console is usually cp1252.
-    # Without this, a successful Korean translation is reported as a failure
-    # because printing the proof of success is what actually threw.
-    with contextlib.suppress(Exception):
-        sys.stdout.reconfigure(errors="replace")
+    # The verifier reads this process's diagnostic protocol as UTF-8, including
+    # build identity and translated text, regardless of the Windows code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     failures: list[str] = []
     skipped: list[str] = []
